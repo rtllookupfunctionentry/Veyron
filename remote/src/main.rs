@@ -467,11 +467,17 @@ unsafe fn run(background: bool, direct: Option<(String, String)>) {
             dirty |= repaint_at.is_some_and(|at| now >= at);
             if hidden || !(fresh || dirty) || (!fresh && drawn.elapsed() < Duration::from_millis(7)) {
                 if hidden && live.as_ref().is_some_and(|l| l.connected) {
-                    hidden = false; // a Mac appeared while waiting in the background
+                    (hidden, dirty) = (false, true); // a Mac appeared while waiting in the background
                     SDL_ShowWindow(window);
                     SDL_RaiseWindow(window);
                 }
-                wait = if dirty { Duration::from_millis(7).saturating_sub(drawn.elapsed()) } else { wait.max(Duration::from_millis(4)) };
+                wait = if hidden {
+                    Duration::from_millis(250) // nothing to draw: only the connection to look after
+                } else if dirty {
+                    Duration::from_millis(7).saturating_sub(drawn.elapsed())
+                } else {
+                    repaint_at.map_or(Duration::from_millis(500), |at| at.saturating_duration_since(now))
+                };
                 if let Some((target, title, quiet)) = connect {
                     live = Some(open(&cfg, wake, target, title, quiet, &mut retry, &found, &mut video));
                 }

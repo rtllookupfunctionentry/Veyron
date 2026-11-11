@@ -415,6 +415,7 @@ pub fn stream(ui: &mut Ui, st: &mut State, cfg: &mut Config, s: &Stream, out: &m
         Area::new(Id::new("stats")).order(Order::Foreground).interactable(false).anchor(Align2::LEFT_TOP, vec2(12.0, 12.0)).show(&ctx, |ui| {
             Frame::new().fill(Color32::from_black_alpha(170)).corner_radius(8).inner_margin(vec2(10.0, 7.0)).show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 2.0;
+                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                 let x = s.stats;
                 let line = |ui: &mut Ui, text: String| ui.label(RichText::new(text).font(FontId::monospace(11.5)).color(TEXT));
                 line(ui, format!("{:.0} fps   {:.1} Mb/s", x.fps, x.mbps));
