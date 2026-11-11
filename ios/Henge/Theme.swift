@@ -1,28 +1,83 @@
 import SwiftUI
 import UIKit
 
-/// The Desk: a charcoal page, cards on it with a hairline edge, and brushed silver for what you press, as
-/// Veyron's mark is silver on charcoal. A Mac's screen is the only colourful thing here.
+/// The Desk: a quiet page, cards on it with a hairline edge, and brushed silver for what you press, as
+/// Veyron's mark is silver on charcoal. A Mac's screen is the only colourful thing here. Dark, or light
+/// (Settings › Appearance), where the silver turns to charcoal on a pale page; a running Mac's session is
+/// always dark.
 enum Desk {
-    static let page = Color(red: 20 / 255, green: 20 / 255, blue: 21 / 255)
-    static let card = Color(red: 28 / 255, green: 28 / 255, blue: 30 / 255)
-    static let raised = Color(red: 41 / 255, green: 41 / 255, blue: 44 / 255)
-    static let text = Color(red: 238 / 255, green: 238 / 255, blue: 239 / 255)
-    static let dim = Color(red: 152 / 255, green: 152 / 255, blue: 157 / 255)
-    static let faint = Color(red: 106 / 255, green: 106 / 255, blue: 112 / 255)
-    static let accent = Color(red: 207 / 255, green: 207 / 255, blue: 210 / 255)
-    static let accentLight = Color(red: 228 / 255, green: 228 / 255, blue: 230 / 255)
-    /// What is written on silver.
-    static let onAccent = Color(red: 22 / 255, green: 22 / 255, blue: 23 / 255)
-    /// A switch that is on: darker than the silver, so its white knob shows.
-    static let switchOn = Color(red: 132 / 255, green: 132 / 255, blue: 138 / 255)
+    static let page = tone(light: (244, 244, 245), dark: (20, 20, 21))
+    static let card = tone(light: (255, 255, 255), dark: (28, 28, 30))
+    static let raised = tone(light: (232, 232, 235), dark: (41, 41, 44))
+    static let text = tone(light: (22, 22, 23), dark: (238, 238, 239))
+    static let dim = tone(light: (99, 99, 104), dark: (152, 152, 157))
+    static let faint = tone(light: (142, 142, 147), dark: (106, 106, 112))
+    static let accent = tone(light: (44, 44, 46), dark: (207, 207, 210))
+    /// For tints and text: lighter on the dark page, deeper on the light one.
+    static let accentLight = tone(light: (28, 28, 30), dark: (228, 228, 230))
+    /// What is written on the accent.
+    static let onAccent = tone(light: (244, 244, 245), dark: (22, 22, 23))
+    /// A switch that is on: apart from one that is off, and dark enough for its white knob to show.
+    static let switchOn = tone(light: (72, 72, 76), dark: (132, 132, 138))
     /// The mark's own shading, for the one action a screen is for.
-    static let silver = LinearGradient(colors: [Color(red: 236 / 255, green: 236 / 255, blue: 237 / 255), Color(red: 168 / 255, green: 168 / 255, blue: 172 / 255)],
+    static let silver = LinearGradient(colors: [tone(light: (72, 72, 76), dark: (236, 236, 237)), tone(light: (28, 28, 30), dark: (168, 168, 172))],
                                        startPoint: .topLeading, endPoint: .bottomTrailing)
-    static let good = Color(red: 57 / 255, green: 217 / 255, blue: 138 / 255)
-    static let warn = Color(red: 1, green: 188 / 255, blue: 46 / 255)
-    static let bad = Color(red: 1, green: 122 / 255, blue: 112 / 255)
-    static let hairline = Color.white.opacity(0.1)
+    static let good = tone(light: (20, 145, 90), dark: (57, 217, 138))
+    static let warn = tone(light: (184, 119, 0), dark: (255, 188, 46))
+    static let bad = tone(light: (210, 56, 43), dark: (255, 122, 112))
+    static let hairline = Color(UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 1, alpha: 0.1) : UIColor(white: 0, alpha: 0.1) })
+
+    private static func tone(light: (Int, Int, Int), dark: (Int, Int, Int)) -> Color {
+        func ui(_ c: (Int, Int, Int)) -> UIColor {
+            UIColor(red: CGFloat(c.0) / 255, green: CGFloat(c.1) / 255, blue: CGFloat(c.2) / 255, alpha: 1)
+        }
+        let l = ui(light), d = ui(dark)
+        return Color(UIColor { $0.userInterfaceStyle == .dark ? d : l })
+    }
+}
+
+/// Settings › Appearance.
+enum DeskAppearance: String, CaseIterable, Identifiable {
+    case system, light, dark
+    static let key = "appearance"
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .system: return "System"
+        case .light: return "Light"
+        case .dark: return "Dark"
+        }
+    }
+    var style: UIUserInterfaceStyle {
+        switch self {
+        case .system: return .unspecified
+        case .light: return .light
+        case .dark: return .dark
+        }
+    }
+}
+
+/// Sets its own window's style directly, so System follows iOS's setting as it changes and a
+/// running Mac's session (in the same window) can stay dark over a light page.
+struct WindowStyle: UIViewRepresentable {
+    let style: UIUserInterfaceStyle
+
+    final class Probe: UIView {
+        var style = UIUserInterfaceStyle.unspecified { didSet { apply() } }
+        override func didMoveToWindow() { super.didMoveToWindow(); apply() }
+        private func apply() {
+            if let window, window.overrideUserInterfaceStyle != style { window.overrideUserInterfaceStyle = style }
+        }
+    }
+
+    func makeUIView(context: Context) -> Probe {
+        let probe = Probe()
+        probe.isUserInteractionEnabled = false
+        probe.style = style
+        return probe
+    }
+
+    func updateUIView(_ probe: Probe, context: Context) { probe.style = style }
 }
 
 extension View {

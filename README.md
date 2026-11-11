@@ -69,7 +69,7 @@ Veyron keeps Henge's bundle identifier. Installed over Henge and signed the same
 - **Storage:** about 43 GB free for macOS Sequoia. That's 17 GB for the download, which you can delete afterwards, and 26 GB for the Mac.
 - **Memory:** a Mac gets 4, 6 or 8 GB. Sign Veyron with the increased memory limit entitlement if your certificate has it.
 
-Then open the Install tab, pick macOS Sequoia 15.6.1, and keep Veyron open with the device plugged in. Tahoe 26.6.2 and macOS 27.2 are offered too. Sonoma 14.6.1 and Ventura 13.6 are smaller downloads (14.1 and 12.3 GB) for devices short on storage. Monterey isn't offered yet: it installs, but its desktop never appears.
+Then open the Install tab, pick macOS Sequoia 15.6.1, and keep Veyron open with the device plugged in. Tahoe 26.6.2 and macOS 27.2 are offered too: both install and run on an iPhone 17 Pro, though Tahoe's first setup is slow and macOS 27 is the slowest (Safari's pages may stay blank on it). Sonoma 14.6.1 and Ventura 13.6 are smaller downloads (14.1 and 12.3 GB) for devices short on storage: they install, set up, and run Safari (both tested on an iPhone 17 Pro). Monterey isn't offered yet: it installs, but its desktop never appears.
 
 ## Veyron Remote
 
@@ -111,7 +111,7 @@ Then a Henge folder in the Mac's home folder is the same folder as Files › Vey
 - Rosetta cannot be installed in the Mac: macOS reports that the platform does not support it.
 - A wallpaper or login screen that went black under an earlier build stays black until the copies macOS saved are removed once. In Terminal inside the Mac: `rm -rf ~/Library/Containers/com.apple.wallpaper.agent/Data/Library/Caches/com.apple.wallpaper.caches/extension-*/*`, then `sudo rm -f /private/var/db/Wallpapers/*/Metadata.plist /private/var/db/Wallpapers/*/Wallpaper.png`, then `killall WallpaperAgent`.
 - Graphics are tested on macOS's own apps, Chrome, Firefox, VS Code, Discord and Roblox. Other apps may draw wrongly.
-- On macOS Sonoma, the login screen and the account picture can be green: choose the wallpaper again in System Settings › Wallpaper (another one, then yours) and the picture in Users & Groups. Switching to a dynamic wallpaper (such as Sonoma) can stop the screen updating. On Ventura, the Calendar icon in the Dock is missing its date.
+- On macOS Sonoma, switching to a dynamic wallpaper (such as Sonoma) can stop the screen updating; opening any app brings it back. On Ventura, the Calendar icon in the Dock is missing its date.
 - For the first few minutes after you log in, macOS is busy starting up in the background, so apps open more slowly.
 - Only one Mac can start per launch. Quit Veyron and open it again to start another, and to start one again after restarting or shutting down macOS.
 - iPadOS keeps some keyboard shortcuts for itself, such as Command-Tab.
