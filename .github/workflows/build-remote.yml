@@ -49,7 +49,7 @@ jobs:
           path: remote/out
 
   macos:
-    runs-on: macos-15
+    runs-on: xcode-27   # the Macs the IPA is built on: macos-15 ones stopped picking this job up (cancelled after 15 minutes in the queue)
     steps:
       - uses: actions/checkout@v4
       - name: Dependencies
