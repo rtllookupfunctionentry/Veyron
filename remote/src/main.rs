@@ -106,6 +106,29 @@ unsafe fn set_clipboard(text: &str) {
     }
 }
 
+/// Where a point of the window (in SDL's units) is on the Mac's screen, 0..32767 each way. None off the
+/// picture, unless a button is held: a drag that leaves it goes on along its edge.
+unsafe fn on_mac(window: *mut SDL_Window, video: &video::Video, x: f32, y: f32, drag: bool) -> Option<(i32, i32)> {
+    unsafe {
+        let ((pw, ph), _) = metrics(window);
+        let (mut w, mut h) = (0, 0);
+        SDL_GetWindowSize(window, &mut w, &mut h);
+        let [left, top, width, height] = video.fit((pw, ph));
+        if width <= 0.0 || height <= 0.0 {
+            return None;
+        }
+        let (u, v) = ((x * pw as f32 / w.max(1) as f32 - left) / width, (y * ph as f32 / h.max(1) as f32 - top) / height);
+        let inside = (0.0..1.0).contains(&u) && (0.0..1.0).contains(&v);
+        (inside || drag).then(|| ((u.clamp(0.0, 1.0) * 32767.0) as i32, (v.clamp(0.0, 1.0) * 32767.0) as i32))
+    }
+}
+
+/// Lets go, on the Mac, of every key and button it was told is down.
+fn release(s: &Session, keys: &mut HashSet<u8>, buttons: &mut HashSet<u8>) {
+    keys.drain().for_each(|k| s.send(4, k, 0, 0));
+    buttons.drain().for_each(|b| s.send(2, b, 0, 0));
+}
+
 /// A controller's state as the phone wants it: the buttons as bits in SDL's order, then six axes. The Mac's
 /// controller has 8 bits to an axis, so the lower 8 are dropped here: a stick at rest then sends nothing.
 unsafe fn pad_state(pad: *mut SDL_Gamepad) -> [u8; 16] {
@@ -218,6 +241,11 @@ unsafe fn run(background: bool, direct: Option<(String, String)>) {
         let mut hold_auto = false; // the user disconnected: do not connect again by itself until the phone is replugged
         let mut tried_auto = Instant::now() - Duration::from_secs(60);
         let mut captured = false;
+        // The seamless mouse: whether the pointer is on the Mac's picture (which has the mouse then), where
+        // on the Mac's screen it is, which buttons the Mac holds, and whether it has yet to be told.
+        let mut over_mac = false;
+        let (mut abs, mut abs_buttons, mut abs_dirty) = ((0i32, 0i32), 0u8, false);
+        let (mut grabbed, mut cursor_hidden) = (false, false);
         let mut fullscreen = false;
         let mut hidden = background && !tray.is_null();
         if background && tray.is_null() {
@@ -249,6 +277,9 @@ unsafe fn run(background: bool, direct: Option<(String, String)>) {
             // ---- what the system has to say ----
             let mut ev: SDL_Event = std::mem::zeroed();
             let mut have = SDL_WaitEventTimeout(&mut ev, wait.as_millis().clamp(1, 500) as i32);
+            // The mouse goes to the Mac by position: the setting, a Henge that can, and a picture to point at.
+            let seamless_mode = cfg.seamless && live.as_ref().is_some_and(|l| l.session.info().is_some_and(|i| i.pointer));
+            let seamless = seamless_mode && !captured && !st.settings && retry.is_none() && video.width > 0 && live.as_ref().is_some_and(|l| l.session.phase().0 == Phase::Live);
             while have {
                 let session = live.as_ref().map(|l| l.session.clone());
                 let kind = SDL_EventType(ev.r#type);
@@ -271,9 +302,23 @@ unsafe fn run(background: bool, direct: Option<(String, String)>) {
                         move_y += ev.motion.yrel * cfg.pointer_speed;
                     }
                     SDL_EVENT_MOUSE_MOTION => {
-                        events.push(egui::Event::PointerMoved(to_points(window, ev.motion.x, ev.motion.y)));
-                        st.moved = started.elapsed().as_secs_f64();
-                        dirty = true;
+                        let p = to_points(window, ev.motion.x, ev.motion.y);
+                        let own = abs_buttons == 0 && st.ui_rect.is_some_and(|r| r.contains(p)); // on the bar: the app's
+                        match on_mac(window, &video, ev.motion.x, ev.motion.y, abs_buttons != 0).filter(|_| seamless && !own) {
+                            Some(at) => {
+                                if !over_mac {
+                                    events.push(egui::Event::PointerGone);
+                                    dirty = true;
+                                }
+                                (over_mac, abs_dirty, abs) = (true, abs_dirty || at != abs, at);
+                            }
+                            None => {
+                                over_mac = false;
+                                events.push(egui::Event::PointerMoved(p));
+                                st.moved = started.elapsed().as_secs_f64();
+                                dirty = true;
+                            }
+                        }
                     }
                     SDL_EVENT_MOUSE_BUTTON_DOWN | SDL_EVENT_MOUSE_BUTTON_UP if captured => {
                         // SDL: 1 left, 2 middle, 3 right. Henge: 0 left, 1 right, 2 middle.
@@ -285,18 +330,37 @@ unsafe fn run(background: bool, direct: Option<(String, String)>) {
                         }
                     }
                     SDL_EVENT_MOUSE_BUTTON_DOWN | SDL_EVENT_MOUSE_BUTTON_UP => {
-                        let button = match ev.button.button { 1 => Some(egui::PointerButton::Primary), 2 => Some(egui::PointerButton::Middle), 3 => Some(egui::PointerButton::Secondary), _ => None };
-                        if let Some(button) = button {
-                            events.push(egui::Event::PointerButton { pos: to_points(window, ev.button.x, ev.button.y), button, pressed: ev.button.down, modifiers: modifiers(SDL_GetModState()) });
+                        let p = to_points(window, ev.button.x, ev.button.y);
+                        let bit = match ev.button.button { 1 => 1u8, 3 => 2, 2 => 4, _ => 0 }; // the Mac's: left, right, middle
+                        // A press is the Mac's when it lands on its picture and not on the bar; a release goes where its press went.
+                        let mac = if ev.button.down {
+                            seamless && bit != 0 && !st.ui_rect.is_some_and(|r| r.contains(p)) && on_mac(window, &video, ev.button.x, ev.button.y, false).is_some()
+                        } else {
+                            abs_buttons & bit != 0
+                        };
+                        if let (Some(s), true) = (&session, mac) {
+                            abs_buttons = if ev.button.down { abs_buttons | bit } else { abs_buttons & !bit };
+                            abs = on_mac(window, &video, ev.button.x, ev.button.y, true).unwrap_or(abs);
+                            s.send(11, abs_buttons, abs.0, abs.1);
+                            (over_mac, abs_dirty) = (true, false);
+                        } else {
+                            let button = match ev.button.button { 1 => Some(egui::PointerButton::Primary), 2 => Some(egui::PointerButton::Middle), 3 => Some(egui::PointerButton::Secondary), _ => None };
+                            if let Some(button) = button {
+                                events.push(egui::Event::PointerButton { pos: p, button, pressed: ev.button.down, modifiers: modifiers(SDL_GetModState()) });
+                            }
+                            dirty = true;
                         }
-                        dirty = true;
                     }
-                    SDL_EVENT_MOUSE_WHEEL if captured => {
+                    SDL_EVENT_MOUSE_WHEEL if captured || (seamless && over_mac) => {
                         wheel_x += ev.wheel.x;
                         wheel_y += ev.wheel.y;
                         let (x, y) = (wheel_x.trunc(), wheel_y.trunc());
                         if let (Some(s), true) = (&session, x != 0.0 || y != 0.0) {
-                            flush_move(s, &mut move_x, &mut move_y);
+                            flush_move(s, &mut move_x, &mut move_y); // it scrolls what the pointer is on by then
+                            if abs_dirty {
+                                s.send(11, abs_buttons, abs.0, abs.1);
+                                abs_dirty = false;
+                            }
                             s.send(3, 0, x as i32, y as i32);
                             wheel_x -= x;
                             wheel_y -= y;
@@ -306,11 +370,21 @@ unsafe fn run(background: bool, direct: Option<(String, String)>) {
                         events.push(egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Line, delta: egui::vec2(ev.wheel.x, ev.wheel.y), phase: egui::TouchPhase::Move, modifiers: modifiers(SDL_GetModState()) });
                         dirty = true;
                     }
-                    SDL_EVENT_KEY_DOWN | SDL_EVENT_KEY_UP if captured => {
+                    SDL_EVENT_KEY_DOWN | SDL_EVENT_KEY_UP if captured || seamless => {
                         let both = SDL_KMOD_LCTRL.0 | SDL_KMOD_LALT.0;
-                        if ev.key.down && ev.key.r#mod.0 & both == both {
-                            captured = false; // Left Ctrl + Left Alt: the mouse and keyboard come back to this computer
+                        if ev.key.down && !ev.key.repeat && ev.key.r#mod.0 & both == both && matches!(ev.key.scancode, SDL_SCANCODE_LCTRL | SDL_SCANCODE_LALT) {
+                            // Left Ctrl + Left Alt: the Mac lets go of a mouse it holds. With the seamless mouse it
+                            // holds none, and this hands it over instead, for a game that turns with the mouse.
+                            captured = !captured;
+                            if let Some(s) = &session {
+                                release(s, &mut held_keys, &mut held_buttons); // the Ctrl of the pair is down in the Mac
+                            }
                             dirty = true;
+                        } else if seamless && ev.key.key == SDLK_F11 {
+                            if ev.key.down && !ev.key.repeat {
+                                fullscreen = !fullscreen;
+                                SDL_SetWindowFullscreen(window, fullscreen);
+                            }
                         } else if let (Some(s), false) = (&session, ev.key.repeat) {
                             // SDL's scancodes are USB HID usages, which is what the Mac's keyboard speaks.
                             let mut usage = ev.key.scancode.0;
@@ -345,6 +419,9 @@ unsafe fn run(background: bool, direct: Option<(String, String)>) {
                     }
                     SDL_EVENT_WINDOW_FOCUS_LOST => {
                         (focused, captured, dirty) = (false, false, true);
+                        if let Some(s) = &session {
+                            release(s, &mut held_keys, &mut held_buttons); // their releases will go to another window
+                        }
                         events.push(egui::Event::WindowFocused(false));
                     }
                     SDL_EVENT_WINDOW_FOCUS_GAINED => {
@@ -352,6 +429,7 @@ unsafe fn run(background: bool, direct: Option<(String, String)>) {
                         events.push(egui::Event::WindowFocused(true));
                     }
                     SDL_EVENT_WINDOW_MOUSE_LEAVE => {
+                        over_mac &= abs_buttons != 0; // a drag goes on outside the window
                         events.push(egui::Event::PointerGone);
                         dirty = true;
                     }
@@ -426,10 +504,18 @@ unsafe fn run(background: bool, direct: Option<(String, String)>) {
                 let s = &l.session;
                 if captured {
                     flush_move(s, &mut move_x, &mut move_y);
-                } else if !held_keys.is_empty() || !held_buttons.is_empty() {
+                } else if !seamless {
                     // The mouse came back with keys still down: let them go on the Mac, or they repeat forever.
-                    held_keys.drain().for_each(|k| s.send(4, k, 0, 0));
-                    held_buttons.drain().for_each(|b| s.send(2, b, 0, 0));
+                    release(s, &mut held_keys, &mut held_buttons);
+                }
+                if !seamless {
+                    if abs_buttons != 0 {
+                        s.send(11, 0, abs.0, abs.1); // the same for a button the seamless mouse held
+                    }
+                    (over_mac, abs_buttons, abs_dirty) = (false, 0, false);
+                } else if abs_dirty {
+                    s.send(11, abs_buttons, abs.0, abs.1);
+                    abs_dirty = false;
                 }
                 if cfg.controller && s.framed() {
                     if let Some(pad) = pads.values().next() {
@@ -452,14 +538,25 @@ unsafe fn run(background: bool, direct: Option<(String, String)>) {
                 s.set_gain(cfg.volume);
             } else {
                 (held_keys.clear(), held_buttons.clear());
+                (over_mac, abs_buttons, abs_dirty) = (false, 0, false);
                 (pad_live, pad_sent) = (false, [0; 16]);
             }
             let relative = SDL_GetWindowRelativeMouseMode(window);
             if relative != captured {
                 SDL_SetWindowRelativeMouseMode(window, captured);
-                SDL_SetWindowKeyboardGrab(window, captured); // the desktop's own shortcuts (Super, Alt+Tab) go to the Mac
                 st.captured_at = started.elapsed().as_secs_f64();
                 (move_x, move_y) = (0.0, 0.0);
+            }
+            // While the Mac has the mouse, the desktop's own shortcuts (Super, Alt+Tab) go to it as well, and
+            // its pointer in the picture is the only one shown.
+            let on_picture = seamless && over_mac;
+            if grabbed != (captured || (on_picture && focused)) {
+                grabbed = !grabbed;
+                SDL_SetWindowKeyboardGrab(window, grabbed);
+            }
+            if cursor_hidden != on_picture {
+                cursor_hidden = on_picture;
+                if cursor_hidden { SDL_HideCursor() } else { SDL_ShowCursor() };
             }
 
             // ---- drawing: at once for a new picture, at most every 7 ms for anything else ----
@@ -524,6 +621,7 @@ unsafe fn run(background: bool, direct: Option<(String, String)>) {
                             retrying: retry.is_some(),
                             has_picture: video.width > 0,
                             captured,
+                            seamless: seamless_mode,
                             fullscreen,
                             stats: &stats,
                         };

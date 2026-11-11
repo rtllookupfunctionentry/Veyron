@@ -18,7 +18,11 @@ pub struct Config {
     pub hardware: bool,
     pub sound: bool,
     pub volume: f32,
-    /// How far the Mac's pointer goes for the mouse's movement. Henge's own trackpad runs at about 2.
+    /// The pointer goes in and out of the Mac's picture freely, the Mac's following it. Off, or with a Henge
+    /// too old for it: a click on the picture hands the mouse to the Mac until it is let go.
+    pub seamless: bool,
+    /// How far the Mac's pointer goes for the mouse's movement while the Mac holds it. Henge's own trackpad
+    /// runs at about 2.
     pub pointer_speed: f32,
     /// Alt is Command and Super is Option, as a Mac keyboard has them laid out.
     pub alt_is_command: bool,
@@ -39,6 +43,7 @@ impl Default for Config {
             hardware: true,
             sound: true,
             volume: 1.0,
+            seamless: true,
             pointer_speed: 2.0,
             alt_is_command: false,
             controller: true,

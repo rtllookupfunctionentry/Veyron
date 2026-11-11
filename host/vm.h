@@ -87,6 +87,9 @@ void hv_vm_touch_button(int down); /* the pad's full press (a click) */
 /* The game controller on the USB bus (a DualShock 4, plugged in by the first call): its whole
    state. buttons and axes as hv_xhci_gamepad takes them; NULL axes unplugs it. */
 void hv_vm_gamepad(uint32_t buttons, const int16_t axes[6]);
+/* The pointer by position, through a USB tablet (plugged in by the first call): buttons by
+   bit (0 left, 1 right, 2 middle), x and y 0..32767 across the display. x < 0 unplugs it. */
+void hv_vm_tablet(int buttons, int x, int y);
 /* Where the guest has its pointer, in display pixels. 0, or -1 before it has one. */
 int hv_vm_pointer(int *x, int *y);
 /* A small picture of the display, BGRA, width * height * 4 bytes. 0, or -1 before anything shows. */

@@ -10,12 +10,14 @@
    Trackpad 2 on port 2: what Virtualization.framework gives a macOS guest as
    its "Virtual USB Keyboard", plus Apple's multitouch pad, so the guest's
    own gesture engine sees a real trackpad. Port 3 is empty until a game
-   controller is in use (hv_xhci_gamepad), and then holds a DualShock 4.
+   controller is in use (hv_xhci_gamepad), and then holds a DualShock 4. Port
+   4 is empty until the pointer is put somewhere by position (hv_xhci_tablet),
+   and then holds a USB tablet.
    Changes come from the host UI on any thread (hv_xhci_key, hv_xhci_touch,
-   hv_xhci_gamepad); the CPU thread delivers them (hv_xhci_poll). */
+   hv_xhci_gamepad, hv_xhci_tablet); the CPU thread delivers them (hv_xhci_poll). */
 #define HV_XHCI_SLOTS 8
-#define HV_XHCI_PORTS 3
-#define HV_XHCI_DEVICES 3
+#define HV_XHCI_PORTS 4
+#define HV_XHCI_DEVICES 4
 #define HV_XHCI_INTRS 4
 #define HV_XHCI_EPS 32 /* device context index 1..31 */
 #define HV_XHCI_REPORTS 256
@@ -30,6 +32,9 @@
 
 #define HV_PAD_REPORTS 64
 #define HV_PAD_REPORT_LEN 64 /* the DualShock 4's input report over USB, report ID 1 */
+
+#define HV_TAB_REPORTS 64
+#define HV_TAB_REPORT_LEN 6 /* the tablet's: buttons, X, Y (16 bits each), wheel */
 
 typedef struct HvXhciRing {
     uint64_t dequeue; /* guest PA of the next TRB */
@@ -56,7 +61,7 @@ typedef struct HvXhci {
     /* device slots: -1 until the device on the slot's port is addressed */
     int slot_used[HV_XHCI_SLOTS + 1];
     struct HvXhciSlot {
-        int dev;         /* 0 keyboard, 1 trackpad, 2 controller, -1 none */
+        int dev;         /* 0 keyboard, 1 trackpad, 2 controller, 3 tablet, -1 none */
         int configured;
         HvXhciRing ep[HV_XHCI_EPS];
         int ep_running[HV_XHCI_EPS];
@@ -96,6 +101,15 @@ typedef struct HvXhci {
     uint8_t pad_seq;    /* the report's 6-bit counter */
     uint64_t pad_delivered;
     uint32_t pad_reqs;  /* control requests logged, capped */
+    /* The tablet: whether it should be on the bus, its current report and the
+       reports waiting for an IN transfer. */
+    int tab_on;
+    uint8_t tab_state[HV_TAB_REPORT_LEN];
+    uint8_t tab_reports[HV_TAB_REPORTS][HV_TAB_REPORT_LEN];
+    uint32_t tab_rhead, tab_rtail;
+    int tab_last_move;  /* the newest waiting report only moved the pointer: the next move may take its place */
+    uint64_t tab_delivered;
+    uint32_t tab_reqs;  /* control requests logged, capped */
 } HvXhci;
 
 HvXhci *hv_xhci_create(HvMachine *m, HvPcie *bus);
@@ -124,6 +138,11 @@ void hv_xhci_touch_button(HvXhci *x, int down);
    (0..32767). Only a change makes a report. NULL axes: the controller is gone,
    unplug it. */
 void hv_xhci_gamepad(HvXhci *x, uint32_t buttons, const int16_t axes[6]);
+/* Any thread: where the pointer is and which of its buttons are down, through a
+   USB tablet that the first call plugs into port 4. buttons, by bit: 0 left,
+   1 right, 2 middle. px, py: 0..32767 across the main display, from its top left.
+   Only a change makes a report. px < 0: unplug it. */
+void hv_xhci_tablet(HvXhci *x, int buttons, int px, int py);
 /* CPU thread: hand waiting reports to the guest. */
 void hv_xhci_poll(HvXhci *x);
 

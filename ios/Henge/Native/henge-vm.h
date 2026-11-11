@@ -84,6 +84,10 @@ void henge_vm_touch_button(int down); /* the pad's full press (a click) */
    right. axes: six values, left x, left y, right x, right y (-32768..32767, y grows downwards),
    left trigger, right trigger (0..32767). NULL axes: the controller is gone, unplug it. */
 void henge_vm_gamepad(uint32_t buttons, const int16_t *axes);
+/* The pointer put somewhere by position, as a remote desktop wants it (a USB tablet, plugged in by
+   the first call): buttons by bit (0 left, 1 right, 2 middle), x and y 0..32767 across the Mac's
+   display from its top left. x < 0: unplug it. */
+void henge_vm_tablet(int buttons, int x, int y);
 /* Where the guest has its pointer, in display pixels. 0, or -1 before it has one. */
 int henge_vm_pointer(int *x, int *y);
 /* A small picture of the display, BGRA, width * height * 4 bytes. 0, or -1 before anything shows. */

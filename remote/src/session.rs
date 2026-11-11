@@ -63,6 +63,8 @@ pub struct ServerInfo {
     pub hevc: bool,
     pub controller: bool,
     pub clipboard: bool,
+    /// The pointer can be put somewhere by position (message 11): what the seamless mouse needs.
+    pub pointer: bool,
 }
 
 #[derive(Clone, Debug, Default)]

@@ -13,8 +13,7 @@ import UIKit
 /// The client is Henge Remote (remote/ in this repository), which reaches a phone on a cable through usbmuxd.
 /// Only USB clients by default. With Wi-Fi allowed, a network client must first send the 6-digit code shown on the phone.
 ///
-/// Protocol 1 is the above with the picture as a raw H.264 Annex-B stream (`ffplay tcp://…` shows it; tools/henge-remote.py
-/// speaks it). A client that sends type 16 (a = 2) within 0.3 s of connecting gets protocol 2 instead: everything from the
+/// Protocol 1 is the above with the picture as a raw H.264 Annex-B stream (`ffplay tcp://…` shows it). A client that sends type 16 (a = 2) within 0.3 s of connecting gets protocol 2 instead: everything from the
 /// phone comes as [type][flags][0][0][length: UInt32 LE] and a body:
 ///   1 a picture: flags bit 0 keyframe, bit 1 HEVC; body = this phone's clock in microseconds (Int64 LE), then Annex-B
 ///   2 what is being shared, as JSON: name, running, width, height, and what this build can do
@@ -24,6 +23,8 @@ import UIKit
 ///   6 send a keyframe          7 a stream setting: a = 1 bitrate (x, tenths of Mbit/s), 2 frames a second (x),
 ///   8 ping (x, y: any 4 bytes)     3 format (x: 0 H.264, 1 HEVC), 4 longer side in pixels (x, 0 = the Mac's own)
 ///   9 a controller's state and 10 text copied on the computer, as [type][a][length: UInt32 LE] and a body.
+///   11 the pointer by position: a = buttons down (bit 0 left, 1 right, 2 middle), x and y 0...32767 across the Mac's
+///      screen. It moves the Mac's pointer to where the computer's is over the picture, with no capturing.
 /// Port 5904 answers one line of JSON (name, running) and hangs up, so a computer can list this phone without taking the
 /// stream; with Wi-Fi allowed the phone also announces itself on the network as `_henge._tcp`.
 final class RemoteDesktop: ObservableObject {
@@ -85,6 +86,7 @@ final class RemoteDesktop: ObservableObject {
     private var heldKeys = Set<UInt8>()
     private var heldButtons = Set<Int32>()
     private var padUsed = false
+    private var tabletUsed = false
 
     /// The name of the Mac being shown, for a computer's list of what it can connect to.
     func setMac(name: String) {
@@ -341,7 +343,7 @@ final class RemoteDesktop: ObservableObject {
         var w: Int32 = 0, h: Int32 = 0
         let running = henge_vm_stream_frame(nil, &w, &h) >= 0
         let info: [String: Any] = ["name": macName, "running": running, "width": Int(w), "height": Int(h),
-                                   "hevc": true, "controller": true, "clipboard": true]
+                                   "hevc": true, "controller": true, "clipboard": true, "pointer": true]
         if let body = try? JSONSerialization.data(withJSONObject: info) { message(2, body) }
     }
 
@@ -423,7 +425,8 @@ final class RemoteDesktop: ObservableObject {
         henge_vm_set_headless(0)
         inputQueue.async { [self] in
             if padUsed { henge_vm_gamepad(0, nil) } // the controller goes with the computer it was on
-            padUsed = false
+            if tabletUsed { henge_vm_tablet(0, -1, 0) } // and so does its pointer, letting go of any button
+            (padUsed, tabletUsed) = (false, false)
             for k in heldKeys { henge_vm_key_hid(k, 0) }
             for b in heldButtons { henge_vm_mouse_button(b, 0) }
             heldKeys.removeAll()
@@ -631,6 +634,9 @@ final class RemoteDesktop: ObservableObject {
             case 8:
                 let echo = Array(inbox[(at - 4)..<at])
                 queue.async { self.pong(echo) }
+            case 11:
+                henge_vm_tablet(Int32(a), x, y)
+                tabletUsed = true
             case 16:
                 queue.async { self.hello() }
             default:

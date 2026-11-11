@@ -41,6 +41,9 @@ pub struct State {
     /// When the pointer last moved over the stream: the bar hides a moment after.
     pub moved: f64,
     pub captured_at: f64,
+    /// With the seamless mouse: the part of the stream that is the app's own (the bar and the grip it opens
+    /// from). The mouse stays with the app there and goes to the Mac everywhere else on the picture.
+    pub ui_rect: Option<Rect>,
 }
 
 fn body(size: f32) -> FontId {
@@ -389,6 +392,8 @@ pub struct Stream<'a> {
     pub retrying: bool,
     pub has_picture: bool,
     pub captured: bool,
+    /// The mouse goes to the Mac by position, with no capturing (see `Config::seamless`).
+    pub seamless: bool,
     pub fullscreen: bool,
     pub stats: &'a Stats,
 }
@@ -398,10 +403,11 @@ pub fn stream(ui: &mut Ui, st: &mut State, cfg: &mut Config, s: &Stream, out: &m
     let full = ui.max_rect();
     let now = ctx.input(|i| i.time);
     let live = s.phase == Phase::Live && s.has_picture && !s.retrying;
+    let own = st.ui_rect.take(); // as last drawn
     if !s.has_picture {
         ui.painter().rect_filled(full, 0.0, BG);
     }
-    if !s.captured {
+    if !s.captured && !s.seamless {
         let video = ui.interact(full, Id::new("video"), Sense::click());
         if video.clicked() && live {
             out.push(Action::Capture);
@@ -465,14 +471,28 @@ pub fn stream(ui: &mut Ui, st: &mut State, cfg: &mut Config, s: &Stream, out: &m
         return;
     }
 
-    // The bar shows while the pointer is near it or has just moved, and whenever the settings are open.
-    let near = ctx.input(|i| i.pointer.hover_pos()).is_some_and(|p| p.y < full.top() + 90.0);
-    let t = ctx.animate_bool_with_time(Id::new("bar"), near || st.settings || now - st.moved < 2.5, 0.2);
-    if now - st.moved < 2.6 {
+    // The bar shows while the pointer is near it or has just moved, and whenever the settings are open. With
+    // the seamless mouse the picture's top belongs to the Mac (its menu bar is there), so the bar opens from
+    // a small grip at the edge and stays for as long as the pointer is on it.
+    let hover = ctx.input(|i| i.pointer.hover_pos());
+    let grip = Rect::from_center_size(pos2(full.center().x, full.top() + 6.0), vec2(84.0, 12.0));
+    let near = if s.seamless {
+        hover.is_some_and(|p| own.unwrap_or(grip).contains(p))
+    } else {
+        hover.is_some_and(|p| p.y < full.top() + 90.0) || now - st.moved < 2.5
+    };
+    let t = ctx.animate_bool_with_time(Id::new("bar"), near || st.settings, 0.2);
+    if !s.seamless && now - st.moved < 2.6 {
         ctx.request_repaint_after_secs(0.3);
     }
+    if s.seamless {
+        st.ui_rect = Some(grip);
+        let mark = Rect::from_center_size(pos2(full.center().x, full.top() + 4.0), vec2(40.0, 4.0));
+        ui.painter().rect_filled(mark.expand(1.0), 3.0, Color32::from_black_alpha((110.0 * (1.0 - t)) as u8));
+        ui.painter().rect_filled(mark, 2.0, Color32::from_white_alpha((120.0 * (1.0 - t)) as u8));
+    }
     if t > 0.0 {
-        Area::new(Id::new("bar")).order(Order::Foreground).anchor(Align2::CENTER_TOP, vec2(0.0, 12.0 - (1.0 - t) * 10.0)).show(&ctx, |ui| {
+        let bar = Area::new(Id::new("bar")).order(Order::Foreground).anchor(Align2::CENTER_TOP, vec2(0.0, 12.0 - (1.0 - t) * 10.0)).show(&ctx, |ui| {
             ui.set_opacity(t);
             Frame::new().fill(PANEL.gamma_multiply(0.94)).stroke(Stroke::new(1.0, LINE)).corner_radius(13).inner_margin(5).show(ui, |ui| {
                 ui.horizontal(|ui| {
@@ -499,7 +519,10 @@ pub fn stream(ui: &mut Ui, st: &mut State, cfg: &mut Config, s: &Stream, out: &m
                 });
             });
         });
-        pill(&ctx, "hint", t, "Click the picture to control the Mac");
+        if s.seamless {
+            st.ui_rect = Some(grip.union(bar.response.rect.expand(8.0)));
+        }
+        pill(&ctx, "hint", t, if s.seamless { "Left Ctrl + Left Alt locks the mouse to the Mac, for games" } else { "Click the picture to control the Mac" });
     }
 }
 
@@ -576,7 +599,10 @@ pub fn settings(ctx: &Context, st: &mut State, cfg: &mut Config, protocol2: Opti
 
                 ui.add_space(8.0);
                 caps(ui, "MOUSE AND KEYBOARD");
-                row(ui, "Pointer speed", &format!("{:.1}×", cfg.pointer_speed), true, |ui| {
+                row(ui, "Seamless mouse", "The pointer goes in and out of the Mac freely", tune, |ui| {
+                    toggle(ui, &mut cfg.seamless);
+                });
+                row(ui, "Pointer speed", &format!("{:.1}×  while the mouse is locked to the Mac", cfg.pointer_speed), true, |ui| {
                     ui.add(egui::Slider::new(&mut cfg.pointer_speed, 0.5..=4.0).show_value(false));
                 });
                 row(ui, "Alt is Command", "Alt and Super swap, as on a Mac keyboard", true, |ui| {

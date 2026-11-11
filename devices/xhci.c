@@ -194,6 +194,37 @@ static const uint8_t pad_config_desc[34] = {
 /* The pad has no serial number string; the empty one is there for a guest that asks anyway. */
 static const char *const pad_strings[] = {NULL, "Sony Interactive Entertainment", "Wireless Controller", ""};
 
+/* Port 4: a USB tablet, which says where the pointer is and not how far it moved:
+   three buttons, X and Y from 0 to 32767 across the main display, a wheel (never
+   turned here). The report descriptor and the IDs are QEMU's usb-tablet's, which
+   macOS guests have been driven with for years. Empty until hv_xhci_tablet. */
+#define TAB_DEV 3
+
+static const uint8_t tab_report_desc[] = {
+    0x05, 0x01, 0x09, 0x02, 0xa1, 0x01, 0x09, 0x01, 0xa1, 0x00, /* generic desktop, mouse, application; pointer, physical */
+    0x05, 0x09, 0x19, 0x01, 0x29, 0x03, 0x15, 0x00, 0x25, 0x01, 0x95, 0x03, 0x75, 0x01, 0x81, 0x02, /* buttons 1-3 */
+    0x95, 0x01, 0x75, 0x05, 0x81, 0x01,                         /* five bits of padding */
+    0x05, 0x01, 0x09, 0x30, 0x09, 0x31, 0x15, 0x00, 0x26, 0xff, 0x7f, 0x35, 0x00, 0x46, 0xff, 0x7f, /* X, Y: 0..32767 */
+    0x75, 0x10, 0x95, 0x02, 0x81, 0x02,                         /* 16 bits each, absolute */
+    0x05, 0x01, 0x09, 0x38, 0x15, 0x81, 0x25, 0x7f, 0x35, 0x00, 0x45, 0x00, 0x75, 0x08, 0x95, 0x01, 0x81, 0x06, /* wheel, relative */
+    0xc0, 0xc0,
+};
+
+static const uint8_t tab_device_desc[18] = {
+    18, 1, 0x00, 0x02, 0, 0, 0, 64, /* USB 2.0, class per interface, EP0 64 bytes */
+    0x27, 0x06, 0x01, 0x00,         /* vendor 0x0627, product 1: QEMU's tablet */
+    0x00, 0x01, 1, 2, 0, 1,         /* bcdDevice 1.00, strings 1-2, no serial number, one configuration */
+};
+
+static const uint8_t tab_config_desc[34] = {
+    9, 2, 34, 0, 1, 1, 0, 0xa0, 50,           /* one interface, remote wakeup, 100 mA */
+    9, 4, 0, 0, 1, 3, 0, 0, 0,                /* interface 0: HID, no boot protocol */
+    9, 0x21, 0x11, 0x01, 0, 1, 0x22, sizeof tab_report_desc, 0, /* HID 1.11, one report descriptor */
+    7, 5, 0x81, 3, 8, 0, 4,                   /* EP1 IN, interrupt, 8 bytes, every 4 ms */
+};
+
+static const char *const tab_strings[] = {NULL, "HengeVM", "HengeVM USB Tablet", ""};
+
 struct HvXhciDev {
     const char *const *strings;
     const uint8_t *device_desc;
@@ -205,6 +236,7 @@ static const struct HvXhciDev devs[HV_XHCI_DEVICES] = {
     {kbd_strings, kbd_device_desc, kbd_config_desc, kbd_report_desc, sizeof kbd_report_desc},
     {tp_strings, tp_device_desc, tp_config_desc, tp_report_desc, sizeof tp_report_desc},
     {pad_strings, pad_device_desc, pad_config_desc, pad_report_desc, sizeof pad_report_desc},
+    {tab_strings, tab_device_desc, tab_config_desc, tab_report_desc, sizeof tab_report_desc},
 };
 
 static int xlog(void) {
@@ -423,6 +455,13 @@ static void pad_queue(HvXhci *x) {
     r[7] |= (uint8_t)(x->pad_seq++ << 2); /* the counter shares a byte with the PS button */
 }
 
+/* Queue the tablet's current report (x->mu held). A full queue gives up its newest
+   entry, as the pad's does: the guest must end on where the pointer is. */
+static void tab_queue(HvXhci *x) {
+    if (x->tab_rtail - x->tab_rhead == HV_TAB_REPORTS) x->tab_rtail--;
+    memcpy(x->tab_reports[x->tab_rtail++ % HV_TAB_REPORTS], x->tab_state, HV_TAB_REPORT_LEN);
+}
+
 /* Answer a SETUP on endpoint 0. Returns the reply length (data to send for IN
    requests), or -1 to stall. */
 static int control(HvXhci *x, int slot, const uint8_t setup[8], uint8_t *out, int max) {
@@ -442,6 +481,12 @@ static int control(HvXhci *x, int slot, const uint8_t setup[8], uint8_t *out, in
     if (x->slots[slot].dev == PAD_DEV && x->pad_reqs < 80) {
         x->pad_reqs++;
         fprintf(stderr, "hengevm: xhci: pad request %02x %02x value %04x index %04x len %u\n",
+                type, req, value, setup[4] | setup[5] << 8, setup[6] | setup[7] << 8);
+    }
+    /* And the tablet's: if macOS will not have it, this is where it shows. */
+    if (x->slots[slot].dev == TAB_DEV && x->tab_reqs < 40) {
+        x->tab_reqs++;
+        fprintf(stderr, "hengevm: xhci: tablet request %02x %02x value %04x index %04x len %u\n",
                 type, req, value, setup[4] | setup[5] << 8, setup[6] | setup[7] << 8);
     }
     const uint8_t *src = NULL;
@@ -488,13 +533,25 @@ static int control(HvXhci *x, int slot, const uint8_t setup[8], uint8_t *out, in
             pad_queue(x);
             pthread_mutex_unlock(&x->mu);
         }
+        if (x->slots[slot].dev == TAB_DEV && (value & 0xff)) { /* the tablet too: where the pointer is now */
+            pthread_mutex_lock(&x->mu);
+            x->tab_rhead = x->tab_rtail;
+            x->tab_last_move = 0;
+            tab_queue(x);
+            pthread_mutex_unlock(&x->mu);
+        }
         return 0;
     } else if (type == 0x81 && req == 10) { /* GET_INTERFACE */
         tmp[0] = 0;
         src = tmp, len = 1;
     } else if (type == 0xa1 && req == 1) { /* GET_REPORT: wValue is (type << 8) | report ID */
         if (x->slots[slot].dev == 0) src = x->state, len = 8;
-        else if (x->slots[slot].dev == PAD_DEV) {
+        else if (x->slots[slot].dev == TAB_DEV) {
+            pthread_mutex_lock(&x->mu);
+            memcpy(tmp, x->tab_state, HV_TAB_REPORT_LEN);
+            pthread_mutex_unlock(&x->mu);
+            src = tmp, len = HV_TAB_REPORT_LEN;
+        } else if (x->slots[slot].dev == PAD_DEV) {
             int rtype = value >> 8, rid = value & 0xff;
             if (rtype == 1 && rid == 0x01) { /* input: the current state */
                 pthread_mutex_lock(&x->mu);
@@ -657,6 +714,20 @@ static void run_ep_in(HvXhci *x, int slot) {
             x->pad_rhead++;
             x->pad_delivered++;
             if (x->pad_delivered <= 4) fprintf(stderr, "hengevm: xhci: pad: %u bytes to the guest (delivered %llu)\n", n, (unsigned long long)x->pad_delivered);
+            transfer_event(x, at, n < want ? CC_SHORT_PACKET : CC_SUCCESS, want - n, slot, dci);
+        }
+    } else if (s->dev == TAB_DEV) {
+        while (x->tab_rhead != x->tab_rtail && ring_peek(x, r, trb, &at)) {
+            int type = (trb[3] >> 10) & 0x3f;
+            ring_advance(r);
+            if (type != TRB_NORMAL) continue;
+            uint64_t buf = (uint64_t)trb[1] << 32 | trb[0];
+            uint32_t want = trb[2] & 0x1ffff;
+            uint32_t n = want < HV_TAB_REPORT_LEN ? want : HV_TAB_REPORT_LEN;
+            wr(x, buf, x->tab_reports[x->tab_rhead % HV_TAB_REPORTS], n);
+            x->tab_rhead++;
+            x->tab_delivered++;
+            if (x->tab_delivered <= 2) fprintf(stderr, "hengevm: xhci: tablet: %u bytes to the guest (delivered %llu)\n", n, (unsigned long long)x->tab_delivered);
             transfer_event(x, at, n < want ? CC_SHORT_PACKET : CC_SUCCESS, want - n, slot, dci);
         }
     } else {
@@ -853,7 +924,7 @@ static void run_commands(HvXhci *x) {
 /* ---- ports ---- */
 
 /* Port 1 is the full-speed keyboard; port 2 is the high-speed trackpad, as the real
-   Magic Trackpad 2 is. Port 3 is the controller's, and pad_plug's to fill. */
+   Magic Trackpad 2 is. Ports 3 and 4 are the controller's and the tablet's, and plug's to fill. */
 static void port_connect(HvXhci *x) {
     for (int p = 0; p < PAD_DEV; p++) {
         x->portsc[p] = PORT_PP | PORT_CCS | PORT_CSC | (uint32_t)(p ? SPEED_HIGH : SPEED_FULL) << PORT_SPEED_SHIFT | 7u << PORT_PLS_SHIFT;
@@ -861,20 +932,17 @@ static void port_connect(HvXhci *x) {
     }
 }
 
-/* CPU thread: plug the controller into port 3 or pull it out, whichever
-   hv_xhci_gamepad asked for last. The guest hears of it as of any hot-plug, by a
-   port status change; full speed, as the real DualShock 4 is. */
-static void pad_plug(HvXhci *x) {
-    pthread_mutex_lock(&x->mu);
-    int on = x->pad_on;
-    pthread_mutex_unlock(&x->mu);
-    if (on == !!(x->portsc[PAD_DEV] & PORT_CCS)) return;
-    x->portsc[PAD_DEV] = on ? PORT_PP | PORT_CCS | PORT_CSC | (uint32_t)SPEED_FULL << PORT_SPEED_SHIFT | 7u << PORT_PLS_SHIFT
-                            : PORT_PP | PORT_CSC | 5u << PORT_PLS_SHIFT; /* nothing there: RxDetect */
-    x->pad_reqs = 0; /* log each plug's handshake and first reports afresh */
-    x->pad_delivered = 0;
-    fprintf(stderr, "hengevm: xhci: pad %s\n", on ? "plugged in" : "unplugged");
-    port_event(x, PAD_DEV);
+/* CPU thread: plug the controller into port 3 or the tablet into port 4, or pull
+   it out, whichever hv_xhci_gamepad or hv_xhci_tablet asked for last. The guest
+   hears of it as of any hot-plug, by a port status change; full speed, as the real
+   DualShock 4 is. Returns whether anything changed. */
+static int plug(HvXhci *x, int port, int on, const char *what) {
+    if (on == !!(x->portsc[port] & PORT_CCS)) return 0;
+    x->portsc[port] = on ? PORT_PP | PORT_CCS | PORT_CSC | (uint32_t)SPEED_FULL << PORT_SPEED_SHIFT | 7u << PORT_PLS_SHIFT
+                         : PORT_PP | PORT_CSC | 5u << PORT_PLS_SHIFT; /* nothing there: RxDetect */
+    fprintf(stderr, "hengevm: xhci: %s %s\n", what, on ? "plugged in" : "unplugged");
+    port_event(x, port);
+    return 1;
 }
 
 static void port_write(HvXhci *x, int p, uint32_t v) {
@@ -933,7 +1001,11 @@ static void reset(HvXhci *x) {
     x->pad_reqs = 0;
     for (int p = 0; p < PAD_DEV; p++)
         x->portsc[p] = PORT_PP | PORT_CCS | PORT_CSC | (uint32_t)(p ? SPEED_HIGH : SPEED_FULL) << PORT_SPEED_SHIFT | 7u << PORT_PLS_SHIFT;
-    x->portsc[PAD_DEV] = PORT_PP | 5u << PORT_PLS_SHIFT; /* empty; pad_plug fills it again if the controller is still in use */
+    x->tab_rhead = x->tab_rtail = 0;
+    x->tab_delivered = 0;
+    x->tab_reqs = 0;
+    /* Empty; plug fills them again if the controller or the tablet is still in use. */
+    x->portsc[PAD_DEV] = x->portsc[TAB_DEV] = PORT_PP | 5u << PORT_PLS_SHIFT;
     update_irq(x);
 }
 
@@ -961,7 +1033,7 @@ static uint64_t bar_read(HvPciDev *d, int bar, uint64_t off, unsigned size) {
         if (size == 8 && i + 1 < 8) v |= (uint64_t)cap[i + 1] << 32;
         v >>= 8 * (off & 3);
     } else if (off >= XECP && off < XECP + 16) { /* Supported Protocol: USB 2.0 on every port */
-        static const uint32_t ext[4] = {2u | 0x0200u << 16, 0x20425355, 1u | (uint32_t)HV_XHCI_PORTS << 8, 0}; /* ports 1 to 3 */
+        static const uint32_t ext[4] = {2u | 0x0200u << 16, 0x20425355, 1u | (uint32_t)HV_XHCI_PORTS << 8, 0}; /* ports 1 to 4 */
         uint32_t i = (uint32_t)(off - XECP) / 4;
         v = ext[i];
         if (size == 8 && i + 1 < 4) v |= (uint64_t)ext[i + 1] << 32;
@@ -1331,9 +1403,44 @@ void hv_xhci_gamepad(HvXhci *x, uint32_t buttons, const int16_t axes[6]) {
     if (changed) hv_machine_wake(x->m);
 }
 
+void hv_xhci_tablet(HvXhci *x, int buttons, int px, int py) {
+    if (!x) return;
+    int on = px >= 0;
+    uint8_t r[HV_TAB_REPORT_LEN] = {0};
+    if (on) {
+        if (px > 32767) px = 32767;
+        if (py < 0) py = 0;
+        if (py > 32767) py = 32767;
+        r[0] = (uint8_t)(buttons & 7);
+        r[1] = (uint8_t)px, r[2] = (uint8_t)(px >> 8);
+        r[3] = (uint8_t)py, r[4] = (uint8_t)(py >> 8);
+    }
+    pthread_mutex_lock(&x->mu);
+    int changed = x->tab_on != on;
+    x->tab_on = on;
+    if (!on) x->tab_rhead = x->tab_rtail; /* nobody is left to read them */
+    else if (memcmp(r, x->tab_state, sizeof r)) {
+        /* Only where the pointer ends up matters of a run of moves, so one takes the place of
+           the one before it while that still waits. A press or a release always stays, with
+           the place it happened at. */
+        int move = r[0] == x->tab_state[0];
+        if (move && x->tab_last_move && x->tab_rtail != x->tab_rhead) x->tab_rtail--;
+        x->tab_last_move = move;
+        memcpy(x->tab_state, r, sizeof r);
+        tab_queue(x);
+        changed = 1;
+    }
+    pthread_mutex_unlock(&x->mu);
+    if (changed) hv_machine_wake(x->m);
+}
+
 void hv_xhci_poll(HvXhci *x) {
     if (!x) return;
-    pad_plug(x);
+    pthread_mutex_lock(&x->mu);
+    int pad = x->pad_on, tab = x->tab_on;
+    pthread_mutex_unlock(&x->mu);
+    if (plug(x, PAD_DEV, pad, "pad")) x->pad_reqs = 0, x->pad_delivered = 0; /* log each plug's handshake and first reports afresh */
+    if (plug(x, TAB_DEV, tab, "tablet")) x->tab_reqs = 0, x->tab_delivered = 0;
     for (int slot = 1; slot <= HV_XHCI_SLOTS; slot++)
         if (x->slots[slot].dev >= 0) run_ep_in(x, slot);
 }

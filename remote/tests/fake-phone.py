@@ -85,7 +85,7 @@ def video(c):
     time.sleep(0.3)  # as the phone does: wait a moment for the hello before choosing the form
     try:
         if framed[0]:
-            message(2, 0, json.dumps({"name": "Test Mac", "running": True, "width": 1920, "height": 1200, "hevc": True, "controller": True, "clipboard": True}).encode())
+            message(2, 0, json.dumps({"name": "Test Mac", "running": True, "width": 1920, "height": 1200, "hevc": True, "controller": True, "clipboard": True, "pointer": True}).encode())
         for picture in frames():
             if framed[0]:
                 key = b"\x00\x00\x00\x01\x67" in picture[:64] or b"\x00\x00\x00\x01\x27" in picture[:64]

@@ -329,6 +329,11 @@ void henge_vm_gamepad(uint32_t buttons, const int16_t *axes) {
     hv_vm_gamepad(buttons, axes);
     pthread_rwlock_unlock(&api_lock);
 }
+void henge_vm_tablet(int buttons, int x, int y) {
+    if (!lock_running()) return;
+    hv_vm_tablet(buttons, x, y);
+    pthread_rwlock_unlock(&api_lock);
+}
 /* Remote desktop. */
 int henge_vm_stream_frame(void *pixel_buffer, int *w, int *h) {
     if (!lock_running()) return -1;
