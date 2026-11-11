@@ -6,17 +6,33 @@ use crate::session::{Phase, Stats, Target};
 use egui::{Align, Align2, Area, Color32, Context, CursorIcon, FontFamily, FontId, Frame, Id, Layout, Order, Rect, Response, RichText, Sense, Stroke, StrokeKind, Ui, UiBuilder, pos2, vec2};
 use egui_phosphor::regular as icon;
 
-const BG: Color32 = Color32::from_rgb(0x0b, 0x0b, 0x0d);
-const PANEL: Color32 = Color32::from_rgb(0x13, 0x13, 0x16);
-const RAISED: Color32 = Color32::from_rgb(0x1b, 0x1b, 0x20);
-const HOVER: Color32 = Color32::from_rgb(0x24, 0x24, 0x2a);
-const LINE: Color32 = Color32::from_rgb(0x27, 0x27, 0x2d);
-const TEXT: Color32 = Color32::from_rgb(0xed, 0xed, 0xf0);
-const MUTED: Color32 = Color32::from_rgb(0x8e, 0x8e, 0x99);
-const FAINT: Color32 = Color32::from_rgb(0x5c, 0x5c, 0x66);
-const ACCENT: Color32 = Color32::from_rgb(0xf2, 0xa6, 0x5a);
-const ACCENT_HI: Color32 = Color32::from_rgb(0xf8, 0xbd, 0x80);
-const ON_ACCENT: Color32 = Color32::from_rgb(0x1c, 0x12, 0x06);
+// Veyron's mark is brushed silver on charcoal, and so is everything here: no colour but for what is going
+// well (green) or wrong (red).
+const BG: Color32 = Color32::from_rgb(0x14, 0x14, 0x15);
+const PANEL: Color32 = Color32::from_rgb(0x1c, 0x1c, 0x1e);
+const RAISED: Color32 = Color32::from_rgb(0x27, 0x27, 0x29);
+const HOVER: Color32 = Color32::from_rgb(0x32, 0x32, 0x35);
+const LINE: Color32 = Color32::from_rgb(0x30, 0x30, 0x33);
+const TEXT: Color32 = Color32::from_rgb(0xee, 0xee, 0xef);
+const MUTED: Color32 = Color32::from_rgb(0x98, 0x98, 0x9d);
+const FAINT: Color32 = Color32::from_rgb(0x66, 0x66, 0x6b);
+const ACCENT: Color32 = Color32::from_rgb(0xcf, 0xcf, 0xd2);
+const ACCENT_HI: Color32 = Color32::from_rgb(0xf4, 0xf4, 0xf5);
+const ON_ACCENT: Color32 = Color32::from_rgb(0x16, 0x16, 0x17);
+
+/// The mark, as the two shapes of its V on a 1024 grid (assets/veyron-remote.svg has them with their shading).
+pub const MARK: [&[(f32, f32)]; 2] = [&[(230.0, 262.0), (430.0, 262.0), (615.0, 605.0), (515.0, 790.0)], &[(600.0, 262.0), (800.0, 262.0), (741.0, 372.0), (541.0, 372.0)]];
+const MARK_INK: [Color32; 2] = [Color32::from_rgb(0xe2, 0xe2, 0xe3), Color32::from_rgb(0xa9, 0xa9, 0xac)];
+
+/// Draws the mark `height` points tall with its top left at `at`; returns its width.
+fn mark(p: &egui::Painter, at: egui::Pos2, height: f32) -> f32 {
+    let k = height / 528.0;
+    for (shape, ink) in MARK.iter().zip(MARK_INK) {
+        let points = shape.iter().map(|(x, y)| at + vec2((x - 230.0) * k, (y - 262.0) * k)).collect();
+        p.add(egui::Shape::convex_polygon(points, ink, Stroke::NONE));
+    }
+    570.0 * k
+}
 const GOOD: Color32 = Color32::from_rgb(0x4a, 0xde, 0x80);
 const BAD: Color32 = Color32::from_rgb(0xf8, 0x71, 0x71);
 
@@ -81,7 +97,7 @@ pub fn theme(ctx: &Context) {
         let v = &mut s.visuals;
         v.panel_fill = BG;
         v.window_fill = PANEL;
-        v.extreme_bg_color = Color32::from_rgb(0x0e, 0x0e, 0x11);
+        v.extreme_bg_color = Color32::from_rgb(0x10, 0x10, 0x11);
         v.widgets.noninteractive.fg_stroke = Stroke::new(1.0, TEXT);
         v.selection.bg_fill = ACCENT.gamma_multiply(0.55);
         v.selection.stroke = Stroke::new(1.0, ACCENT);
@@ -234,7 +250,8 @@ pub fn home(ui: &mut Ui, st: &mut State, cfg: &mut Config, found: &[Found], no_u
     let full = ui.max_rect();
     ui.painter().rect_filled(full, 0.0, BG);
     let p = ui.painter().clone();
-    let mark = p.text(pos2(full.left() + 24.0, full.top() + 28.0), Align2::LEFT_CENTER, "Henge", semi(16.0), TEXT);
+    let v = mark(&p, pos2(full.left() + 24.0, full.top() + 19.0), 18.0);
+    let mark = p.text(pos2(full.left() + 24.0 + v + 9.0, full.top() + 28.0), Align2::LEFT_CENTER, "Veyron", semi(16.0), TEXT);
     p.text(pos2(mark.right() + 6.0, full.top() + 28.0), Align2::LEFT_CENTER, "Remote", body(16.0), MUTED);
     let gear = Rect::from_min_size(pos2(full.right() - 24.0 - 32.0, full.top() + 12.0), vec2(32.0, 32.0));
     ui.scope_builder(UiBuilder::new().max_rect(gear), |ui| {
@@ -257,7 +274,7 @@ pub fn home(ui: &mut Ui, st: &mut State, cfg: &mut Config, found: &[Found], no_u
                 let (detail, dot) = match &f.info {
                     Some(i) if i.running && !i.name.is_empty() => (format!("{way}  ·  {} is running", i.name), Some(GOOD)),
                     Some(i) if i.running => (format!("{way}  ·  A Mac is running"), Some(GOOD)),
-                    Some(_) => (format!("{way}  ·  No Mac is running in Henge"), Some(FAINT)),
+                    Some(_) => (format!("{way}  ·  No Mac is running in Veyron"), Some(FAINT)),
                     None => (way.to_string(), None),
                 };
                 if card(ui, glyph, &f.title, &detail, dot, "Connect").clicked() {
@@ -286,7 +303,7 @@ pub fn home(ui: &mut Ui, st: &mut State, cfg: &mut Config, found: &[Found], no_u
                         out.push(Action::Connect(Target::Net { host: host.clone(), port, code: st.code.clone() }, host));
                     }
                 });
-                ui.label(RichText::new("The address and the six-digit code are in Henge, under Remote Desktop, once Wi-Fi is allowed there.").size(11.5).color(MUTED));
+                ui.label(RichText::new("The address and the six-digit code are in Veyron, under Remote Desktop, once Wi-Fi is allowed there.").size(11.5).color(MUTED));
             });
             let mut forget = None;
             for (i, s) in cfg.saved.iter().enumerate() {
@@ -324,7 +341,7 @@ fn empty(ui: &mut Ui, no_usbmuxd: bool) {
     let pulse = (ui.input(|i| i.time) * 1.6).sin() as f32 * 0.5 + 0.5;
     p.text(rect.center_top() + vec2(0.0, 36.0), Align2::CENTER_CENTER, icon::BROADCAST, icons(26.0), mix(FAINT, MUTED, pulse));
     p.text(rect.center_top() + vec2(0.0, 72.0), Align2::CENTER_CENTER, "No Mac found yet", semi(14.0), TEXT);
-    let how = if no_usbmuxd { "Start usbmuxd to see phones on a cable, or use an address below." } else { "Plug the iPhone in, open the Mac in Henge and turn on Remote Desktop." };
+    let how = if no_usbmuxd { "Start usbmuxd to see phones on a cable, or use an address below." } else { "Plug the iPhone in, open the Mac in Veyron and turn on Remote Desktop." };
     p.text(rect.center_top() + vec2(0.0, 96.0), Align2::CENTER_CENTER, how, body(12.5), MUTED);
     ui.ctx().request_repaint_after_secs(0.05);
 }
@@ -351,7 +368,7 @@ fn toast(ctx: &Context, st: &mut State) {
     });
 }
 
-/// Asks for the six digits Henge shows, for a Mac found on Wi-Fi that this PC has not connected to before.
+/// Asks for the six digits Veyron shows, for a Mac found on Wi-Fi that this PC has not connected to before.
 fn prompt(ctx: &Context, st: &mut State, out: &mut Vec<Action>) {
     let Some(found) = st.prompt.clone() else { return };
     let screen = ctx.content_rect();
@@ -366,7 +383,7 @@ fn prompt(ctx: &Context, st: &mut State, out: &mut Vec<Action>) {
         Frame::new().fill(PANEL).stroke(Stroke::new(1.0, LINE)).corner_radius(16).inner_margin(22).show(ui, |ui| {
             ui.set_width(300.0);
             ui.label(RichText::new(format!("Code for {}", found.title)).font(semi(15.0)));
-            ui.label(RichText::new("Henge shows six digits under Remote Desktop. They change each time sharing is turned on.").size(12.5).color(MUTED));
+            ui.label(RichText::new("Veyron shows six digits under Remote Desktop. They change each time sharing is turned on.").size(12.5).color(MUTED));
             ui.add_space(4.0);
             code_only(&mut st.prompt_code);
             let edit = ui.add(egui::TextEdit::singleline(&mut st.prompt_code).font(semi(22.0)).desired_width(f32::INFINITY).margin(vec2(12.0, 10.0)).horizontal_align(Align::Center));
@@ -542,7 +559,7 @@ fn pill(ctx: &Context, id: &str, opacity: f32, text: &str) {
 
 // ---- settings ----
 
-/// `protocol2`: None with no Mac connected; otherwise whether the connected Henge takes stream settings.
+/// `protocol2`: None with no Mac connected; otherwise whether the connected Veyron takes stream settings.
 pub fn settings(ctx: &Context, st: &mut State, cfg: &mut Config, protocol2: Option<bool>) {
     let t = ctx.animate_bool_with_time(Id::new("sheet"), st.settings, 0.18);
     if t == 0.0 {
@@ -573,7 +590,7 @@ pub fn settings(ctx: &Context, st: &mut State, cfg: &mut Config, protocol2: Opti
                 ui.add_space(6.0);
                 caps(ui, "STREAM");
                 if protocol2 == Some(false) {
-                    ui.label(RichText::new("The Henge on this phone is older than these settings: they apply once it is updated.").size(11.5).color(ACCENT));
+                    ui.label(RichText::new("The Veyron on this phone is older than these settings: they apply once it is updated.").size(11.5).color(ACCENT));
                 }
                 let tune = protocol2 != Some(false);
                 row(ui, "Quality", &format!("{} Mb/s", cfg.tuning.mbps), tune, |ui| {

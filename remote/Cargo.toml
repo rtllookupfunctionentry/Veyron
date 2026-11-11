@@ -1,8 +1,8 @@
 [package]
-name = "henge-remote"
+name = "veyron-remote"
 version = "0.1.0"
 edition = "2024"
-description = "Shows the Mac that Henge runs on an iPhone, and controls it"
+description = "Shows the Mac that Veyron runs on an iPhone, and controls it"
 license = "GPL-2.0-or-later"
 
 [features]

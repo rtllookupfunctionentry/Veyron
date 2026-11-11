@@ -1,4 +1,4 @@
-//! Looks for Macs to connect to: iPhones on a cable (asked of usbmuxd every second and a half) and Henge
+//! Looks for Macs to connect to: iPhones on a cable (asked of usbmuxd every second and a half) and Veyron
 //! announcing itself on the local network (Bonjour, `_henge._tcp`, from builds with protocol 2).
 use crate::session::{self, ServerInfo, Target};
 use crate::usbmux;
@@ -13,7 +13,7 @@ pub struct Found {
     /// The phone's name, or its address.
     pub title: String,
     pub usb: bool,
-    /// Only from a Henge with protocol 2; None says nothing either way.
+    /// Only from a Veyron with protocol 2; None says nothing either way.
     pub info: Option<ServerInfo>,
 }
 
@@ -82,7 +82,9 @@ impl Discovery {
                 mdns_sd::ServiceEvent::ServiceResolved(svc) => {
                     let Some(ip) = svc.get_addresses_v4().into_iter().next() else { continue };
                     let name = svc.txt_properties.get_property_val_str("name").unwrap_or("iPhone").to_string();
-                    let target = Target::Net { host: ip.to_string(), port: svc.get_port(), code: String::new() };
+                    // The stream's port is in the text record; the announcement's own is the status port's.
+                    let port = svc.txt_properties.get_property_val_str("port").and_then(|p| p.parse().ok()).unwrap_or(svc.get_port());
+                    let target = Target::Net { host: ip.to_string(), port, code: String::new() };
                     seen.insert(svc.get_fullname().to_string(), Found { target, title: name, usb: false, info: None });
                 }
                 mdns_sd::ServiceEvent::ServiceRemoved(_, fullname) => {

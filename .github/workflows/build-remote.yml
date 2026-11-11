@@ -1,5 +1,5 @@
-# Builds Henge Remote (remote/), the desktop app that shows and controls the Mac Henge runs on a phone,
-# for Linux, Windows and macOS. Each job leaves an artifact: henge-remote-<system>-<sha>.
+# Builds Veyron Remote (remote/), the desktop app that shows and controls the Mac Veyron runs on a phone,
+# for Linux, Windows and macOS. Each job leaves an artifact: veyron-remote-<system>-<sha>.
 #
 # What each needs to run:
 #   Linux    FFmpeg 6 (libavcodec.so.60) from the distribution; SDL3 is built in.
@@ -7,7 +7,7 @@
 #            (it comes with iTunes or the Apple Devices app).
 #   macOS    `brew install ffmpeg sdl3` (the program links Homebrew's copies of both).
 
-name: Build Henge Remote
+name: Build Veyron Remote
 
 on:
   workflow_dispatch: {}
@@ -40,12 +40,12 @@ jobs:
         run: python3 -m py_compile tests/fake-phone.py
       - name: Package
         run: |
-          mkdir -p out/henge-remote
-          cp target/release/henge-remote install.sh out/henge-remote/
-          cp -r assets out/henge-remote/
+          mkdir -p out/veyron-remote
+          cp target/release/veyron-remote install.sh out/veyron-remote/
+          cp -r assets out/veyron-remote/
       - uses: actions/upload-artifact@v4
         with:
-          name: henge-remote-linux-${{ github.sha }}
+          name: veyron-remote-linux-${{ github.sha }}
           path: remote/out
 
   macos:
@@ -60,8 +60,8 @@ jobs:
         run: cargo build --release --locked
       - uses: actions/upload-artifact@v4
         with:
-          name: henge-remote-macos-${{ github.sha }}
-          path: remote/target/release/henge-remote
+          name: veyron-remote-macos-${{ github.sha }}
+          path: remote/target/release/veyron-remote
 
   windows:
     runs-on: windows-latest
@@ -79,10 +79,10 @@ jobs:
       - name: Package
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force out/henge-remote | Out-Null
-          Copy-Item target/release/henge-remote.exe out/henge-remote/
-          Copy-Item "$env:FFMPEG_DIR/bin/avcodec-*.dll","$env:FFMPEG_DIR/bin/avutil-*.dll","$env:FFMPEG_DIR/bin/swresample-*.dll" out/henge-remote/
+          New-Item -ItemType Directory -Force out/veyron-remote | Out-Null
+          Copy-Item target/release/veyron-remote.exe out/veyron-remote/
+          Copy-Item "$env:FFMPEG_DIR/bin/avcodec-*.dll","$env:FFMPEG_DIR/bin/avutil-*.dll","$env:FFMPEG_DIR/bin/swresample-*.dll" out/veyron-remote/
       - uses: actions/upload-artifact@v4
         with:
-          name: henge-remote-windows-${{ github.sha }}
+          name: veyron-remote-windows-${{ github.sha }}
           path: remote/out

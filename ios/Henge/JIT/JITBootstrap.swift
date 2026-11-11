@@ -137,8 +137,8 @@ enum JITBootstrap {
             lastFailure = "The debugger is attached but is not answering trap "
                         + "requests, and this device will not execute a MAP_JIT "
                         + "mapping either, so no executable memory could be "
-                        + "claimed. This happens when Henge was opened from StikDebug's "
-                        + "app list, which attaches without Henge's script: open Henge "
+                        + "claimed. This happens when Veyron was opened from StikDebug's "
+                        + "app list, which attaches without Veyron's script: open Veyron "
                         + "from the Home Screen and tap Turn On JIT. It also happens "
                         + "inside another container app."
         }
@@ -176,7 +176,7 @@ enum JITBootstrap {
         if prewarmed || isLive { return true }
         // On a TXM device the debugger must also answer the brk that claims the region. CS_DEBUGGED alone is what opening
         // Henge from StikDebug's app list gives (no Henge script) or LiveContainer, and an install then stops at
-        // "Henge has no JIT region" (#23).
+        // "Veyron has no JIT region" (#23).
         if debuggedFlag { return !deviceEnforcesTXM }
         guard canGrantOwnJIT, !selfGrantTried else { return false }
         return prewarm()
@@ -409,7 +409,7 @@ enum JITBootstrap {
         // checked against whichever app iOS actually installed — a container app hosting Henge
         // fails the query even when StikDebug is installed. open() has no such restriction.
         HengeLog.log("jit", "opening stikjit:// for bundle \(bundleID), pid \(getpid()); "
-                         + "Henge will be backgrounded and relaunched after attach")
+                         + "Veyron will be backgrounded and relaunched after attach")
         UIApplication.shared.open(launchURL, options: [:]) { success in
             if !success {
                 HengeLog.log("jit", "FAIL: open(stikjit://) did not succeed -- StikDebug is not installed")

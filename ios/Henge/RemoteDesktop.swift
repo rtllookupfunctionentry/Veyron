@@ -63,6 +63,8 @@ final class RemoteDesktop: ObservableObject {
     private var lockedUntil = 0.0
     private var statusListener: NWListener?
     private var macName = ""
+    private var sharing = false      // between start() and stop(): a listener that fails is opened again
+    private var deviceName = ""
     // queue only: protocol 2
     private var framed = false       // the client said hello: everything goes out as messages
     private var formDecided = false  // the hello came, or the wait for it ran out
@@ -94,46 +96,71 @@ final class RemoteDesktop: ObservableObject {
     }
 
     func start() {
-        let deviceName = UIDevice.current.name
+        let name = UIDevice.current.name
         queue.async { [self] in
-            guard listener == nil else { return }
+            guard !sharing else { return }
+            (sharing, deviceName) = (true, name)
             let code = String(format: "%06d", Int.random(in: 0..<1_000_000))
             codeBytes = Array(code.utf8)
             DispatchQueue.main.async { self.code = code }
-            do {
-                let l = try NWListener(using: .tcp, on: NWEndpoint.Port(rawValue: Self.port)!)
-                l.newConnectionHandler = { [weak self] c in self?.accept(c) }
-                l.stateUpdateHandler = { state in HengeLog.log("remote", "listener: \(state)") }
-                l.service = Self.service(deviceName)
-                l.start(queue: queue)
-                listener = l
-                let status = try NWListener(using: .tcp, on: NWEndpoint.Port(rawValue: Self.statusPort)!)
-                status.newConnectionHandler = { [weak self] c in self?.answerStatus(c) }
-                status.start(queue: queue)
-                statusListener = status
-            } catch {
-                HengeLog.log("remote", "can't listen on \(Self.port): \(error)")
-            }
+            open()
             let codeNow = codeBytes
             audioQueue.async { [self] in startAudio(code: codeNow) }
         }
     }
 
-    /// What computers on the network find this phone by, while Wi-Fi is allowed.
-    private static func service(_ deviceName: String) -> NWListener.Service? {
-        guard UserDefaults.standard.bool(forKey: wifiKey) else { return nil }
-        return NWListener.Service(name: deviceName, type: "_henge._tcp", txtRecord: NWTXTRecord(["name": deviceName]))
+    /// (queue) Opens whichever of the two listeners is not there. The announcement on the network rides on the
+    /// status port's listener and never on the stream's: when Bonjour fails, the listener it is on fails with
+    /// it, and that took the stream's port away in the middle of a session over Wi-Fi.
+    private func open() {
+        guard sharing else { return }
+        if listener == nil {
+            listener = listen(Self.port, nil) { [weak self] c in self?.accept(c) }
+        }
+        if statusListener == nil {
+            statusListener = listen(Self.statusPort, service()) { [weak self] c in self?.answerStatus(c) }
+        }
     }
 
-    /// Wi-Fi was allowed or shut out: start or stop announcing. The listener stays as it is; one made anew in
-    /// the same moment found the port still taken by the one before it and failed, USB included.
+    /// (queue) A listener that opens the port again by itself, a second after failing.
+    private func listen(_ port: UInt16, _ service: NWListener.Service?, _ handler: @escaping (NWConnection) -> Void) -> NWListener? {
+        guard let l = try? NWListener(using: .tcp, on: NWEndpoint.Port(rawValue: port)!) else {
+            HengeLog.log("remote", "can't listen on \(port)")
+            queue.asyncAfter(deadline: .now() + 1) { [weak self] in self?.open() }
+            return nil
+        }
+        l.newConnectionHandler = handler
+        l.service = service
+        l.stateUpdateHandler = { [weak self, weak l] state in
+            HengeLog.log("remote", "listener \(port): \(state)")
+            guard case .failed = state, let self, let l else { return }
+            l.cancel()
+            self.queue.asyncAfter(deadline: .now() + 1) {
+                if self.listener === l { self.listener = nil }
+                if self.statusListener === l { self.statusListener = nil }
+                self.open()
+            }
+        }
+        l.start(queue: queue)
+        return l
+    }
+
+    /// (queue) What computers on the network find this phone by, while Wi-Fi is allowed: its name, and the
+    /// stream's port (the announcement itself carries the status port's).
+    private func service() -> NWListener.Service? {
+        guard UserDefaults.standard.bool(forKey: Self.wifiKey) else { return nil }
+        return NWListener.Service(name: deviceName, type: "_henge._tcp", txtRecord: NWTXTRecord(["name": deviceName, "port": "\(Self.port)"]))
+    }
+
+    /// Wi-Fi was allowed or shut out: start or stop announcing. The listeners stay as they are; one made anew
+    /// in the same moment found the port still taken by the one before it and failed.
     func announce() {
-        let deviceName = UIDevice.current.name
-        queue.async { [self] in listener?.service = Self.service(deviceName) }
+        queue.async { [self] in statusListener?.service = service() }
     }
 
     func stop() {
         queue.async { [self] in
+            sharing = false
             listener?.cancel()
             listener = nil
             statusListener?.cancel()
@@ -289,7 +316,10 @@ final class RemoteDesktop: ObservableObject {
         c.stateUpdateHandler = { [weak self] state in
             guard let self else { return }
             switch state {
-            case .failed, .cancelled: self.queue.async { if c === self.connection { self.drop() } }
+            case .failed(let error):
+                HengeLog.log("remote", "connection to \(c.endpoint) failed: \(error)")
+                self.queue.async { if c === self.connection { self.drop() } }
+            case .cancelled: self.queue.async { if c === self.connection { self.drop() } }
             default: break
             }
         }

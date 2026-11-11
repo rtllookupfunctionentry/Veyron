@@ -130,12 +130,12 @@ final class JITCoordinator: ObservableObject {
 
     var automaticDescription: String {
         switch resolvedMethod {
-        case .stikDebug: return "StikDebug is installed, so Henge will open it."
-        case .trollStore: return "TrollStore is installed, so Henge will ask it to enable JIT."
+        case .stikDebug: return "StikDebug is installed, so Veyron will open it."
+        case .trollStore: return "TrollStore is installed, so Veyron will ask it to enable JIT."
         case .jailbreak: return "This device is jailbroken, so JIT comes from the jailbreak's Allow JIT in Apps setting."
         default: return hasPairing
-            ? "Henge will use its paired built-in helper."
-            : "StikDebug, TrollStore and a jailbreak were not found, so Henge will use its built-in helper."
+            ? "Veyron will use its paired built-in helper."
+            : "StikDebug, TrollStore and a jailbreak were not found, so Veyron will use its built-in helper."
         }
     }
 
@@ -229,12 +229,12 @@ final class JITCoordinator: ObservableObject {
             if JITBootstrap.requestTrollStoreAttach() {
                 awaitTrollStore()
             } else {
-                error = "TrollStore could not be opened. Install Henge through TrollStore, or choose another method."
+                error = "TrollStore could not be opened. Install Veyron through TrollStore, or choose another method."
                 showSetup = true
             }
         case .jailbreak:
             // Nothing to ask: a jailbreak marks an app as debugged as it opens, if it has been told to. Say what to turn on.
-            error = "Turn on Allow JIT in Apps in Dopamine's settings, then open Henge again."
+            error = "Turn on Allow JIT in Apps in Dopamine's settings, then open Veyron again."
             showSetup = true
         case .builtIn:
             guard HengeBuiltInJIT.isAvailable, hasPairing else {
@@ -263,7 +263,7 @@ final class JITCoordinator: ObservableObject {
                 log("TrollStore enabled JIT")
             } else {
                 status = nil
-                error = "TrollStore did not enable JIT. In TrollStore's Settings turn on URL Scheme, and make sure Henge was "
+                error = "TrollStore did not enable JIT. In TrollStore's Settings turn on URL Scheme, and make sure Veyron was "
                       + "installed through TrollStore (or is signed with get-task-allow)."
                 log("TrollStore did not enable JIT within a minute")
                 showSetup = true
@@ -355,7 +355,7 @@ final class JITCoordinator: ObservableObject {
     func enableBuiltIn(attempt: Int = 1) {
         guard let pairing = builtInPairing() else { return }
         guard let script = JITBootstrap.scriptBase64 else {
-            error = "Henge's JIT script is missing from this installation. Reinstall Henge."
+            error = "Veyron's JIT script is missing from this installation. Reinstall Veyron."
             return
         }
 
@@ -364,7 +364,7 @@ final class JITCoordinator: ObservableObject {
         error = nil
         connectionProblem = nil
         advice = nil
-        if attempt == 1 { status = "Starting Henge's JIT helper…" }
+        if attempt == 1 { status = "Starting Veyron's JIT helper…" }
         log("enabling JIT with the built-in helper" + (attempt > 1 ? " (attempt \(attempt))" : ""))
         var readiness: Timer?
         var finished = false

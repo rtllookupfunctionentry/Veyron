@@ -124,7 +124,7 @@ struct InstallView: View {
         .buttonStyle(DeskButtonStyle(enabled: jitReady && !Device.chipTooOld))
         .disabled(!jitReady || Device.chipTooOld)
         .padding(.top, 20)
-        Text(Device.chipTooOld ? Device.chipTooOldText : jitReady ? "Keep Henge open and the \(Device.name) plugged in. Needs about \(ByteText.string(UInt64(Installer.spaceNeeded(release)))) free."
+        Text(Device.chipTooOld ? Device.chipTooOldText : jitReady ? "Keep Veyron open and the \(Device.name) plugged in. Needs about \(ByteText.string(UInt64(Installer.spaceNeeded(release)))) free."
                                 : JITBootstrap.lastFailure ?? "Turn on JIT first. \(jit.automaticDescription)")
             .font(.system(size: 13))
             .foregroundStyle(Desk.dim)
@@ -194,7 +194,7 @@ struct InstallView: View {
     }
 
     @ViewBuilder private var progress: some View {
-        Text("\(release.name) on this \(Device.name). Keep Henge open.")
+        Text("\(release.name) on this \(Device.name). Keep Veyron open.")
             .font(.system(size: 16))
             .foregroundStyle(Desk.dim)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -283,7 +283,7 @@ struct InstallView: View {
         VStack(alignment: .leading, spacing: 10) {
             Text("It did not work").font(.system(size: 22, weight: .bold))
             Text(text).font(.system(size: 15))
-            Text("Quit Henge (swipe it away) and open it again before trying again: only one Mac can start per launch.")
+            Text("Quit Veyron (swipe it away) and open it again before trying again: only one Mac can start per launch.")
                 .font(.system(size: 13)).foregroundStyle(Desk.dim)
             Button("Back") { installer.reset() }.buttonStyle(DeskButtonStyle()).padding(.top, 6)
         }

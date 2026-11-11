@@ -18,10 +18,10 @@ pub struct Config {
     pub hardware: bool,
     pub sound: bool,
     pub volume: f32,
-    /// The pointer goes in and out of the Mac's picture freely, the Mac's following it. Off, or with a Henge
+    /// The pointer goes in and out of the Mac's picture freely, the Mac's following it. Off, or with a Veyron
     /// too old for it: a click on the picture hands the mouse to the Mac until it is let go.
     pub seamless: bool,
-    /// How far the Mac's pointer goes for the mouse's movement while the Mac holds it. Henge's own trackpad
+    /// How far the Mac's pointer goes for the mouse's movement while the Mac holds it. Veyron's own trackpad
     /// runs at about 2.
     pub pointer_speed: f32,
     /// Alt is Command and Super is Option, as a Mac keyboard has them laid out.
@@ -58,12 +58,15 @@ impl Default for Config {
 }
 
 fn path() -> Option<PathBuf> {
-    Some(dirs::config_dir()?.join("henge-remote").join("config.json"))
+    Some(dirs::config_dir()?.join("veyron-remote").join("config.json"))
 }
 
 impl Config {
     pub fn load() -> Config {
-        path().and_then(|p| std::fs::read(p).ok()).and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+        // Before the app was Veyron Remote its file was in a folder of the old name: still read, never written.
+        let old = || dirs::config_dir().map(|d| d.join("henge-remote").join("config.json"));
+        let bytes = path().and_then(|p| std::fs::read(p).ok()).or_else(|| std::fs::read(old()?).ok());
+        bytes.and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
     }
 
     pub fn save(&self) {
@@ -89,10 +92,10 @@ pub fn set_start_at_login(on: bool) {
     #[cfg(target_os = "linux")]
     {
         let Some(dir) = dirs::config_dir().map(|d| d.join("autostart")) else { return };
-        let file = dir.join("henge-remote.desktop");
+        let file = dir.join("veyron-remote.desktop");
         if on {
             let _ = std::fs::create_dir_all(&dir);
-            let _ = std::fs::write(file, format!("[Desktop Entry]\nType=Application\nName=Henge Remote\nExec=\"{exe}\" --background\nIcon=henge-remote\nX-GNOME-Autostart-enabled=true\n"));
+            let _ = std::fs::write(file, format!("[Desktop Entry]\nType=Application\nName=Veyron Remote\nExec=\"{exe}\" --background\nIcon=veyron-remote\nX-GNOME-Autostart-enabled=true\n"));
         } else {
             let _ = std::fs::remove_file(file);
         }
@@ -102,22 +105,22 @@ pub fn set_start_at_login(on: bool) {
         let key = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
         let mut cmd = std::process::Command::new("reg");
         if on {
-            cmd.args(["add", key, "/v", "HengeRemote", "/t", "REG_SZ", "/d", &format!("\"{exe}\" --background"), "/f"]);
+            cmd.args(["add", key, "/v", "VeyronRemote", "/t", "REG_SZ", "/d", &format!("\"{exe}\" --background"), "/f"]);
         } else {
-            cmd.args(["delete", key, "/v", "HengeRemote", "/f"]);
+            cmd.args(["delete", key, "/v", "VeyronRemote", "/f"]);
         }
         let _ = cmd.status();
     }
     #[cfg(target_os = "macos")]
     {
         let Some(dir) = dirs::home_dir().map(|d| d.join("Library/LaunchAgents")) else { return };
-        let file = dir.join("app.henge.remote.plist");
+        let file = dir.join("app.veyron.remote.plist");
         if on {
             let _ = std::fs::create_dir_all(&dir);
             let _ = std::fs::write(
                 file,
                 format!(
-                    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\"><dict><key>Label</key><string>app.henge.remote</string><key>ProgramArguments</key><array><string>{exe}</string><string>--background</string></array><key>RunAtLoad</key><true/></dict></plist>\n"
+                    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\"><dict><key>Label</key><string>app.veyron.remote</string><key>ProgramArguments</key><array><string>{exe}</string><string>--background</string></array><key>RunAtLoad</key><true/></dict></plist>\n"
                 ),
             );
         } else {

@@ -124,7 +124,7 @@ struct SessionView: View {
                         floatingControls(layout)
                     }
                     if pointerRefused && !showRevealHint {
-                        Label("Make Henge full screen to use the trackpad or mouse as the Mac's", systemImage: "cursorarrow.rays")
+                        Label("Make Veyron full screen to use the trackpad or mouse as the Mac's", systemImage: "cursorarrow.rays")
                             .font(.system(size: 15, weight: .medium))
                             .foregroundStyle(.white)
                             .padding(.horizontal, 18).padding(.vertical, 12)
@@ -554,7 +554,7 @@ struct SessionView: View {
                             LabeledContent("Code", value: remote.code)
                         }
                     }
-                    Text("Open Henge Remote on the computer. It finds this phone by itself on a cable, and on the same Wi-Fi once that is allowed here, where it asks for the code. Keep Henge open: iOS pauses it in the background.")
+                    Text("Open Veyron Remote on the computer. It finds this phone by itself on a cable, and on the same Wi-Fi once that is allowed here, where it asks for the code. Keep Veyron open: iOS pauses it in the background.")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 Section("Sharing") {
@@ -569,7 +569,7 @@ struct SessionView: View {
                         }
                     }
                     Text(helperRunning
-                         ? "Put files in Files, Henge, Shared to see them in the Henge folder in this Mac's home folder. What you copy on the Mac is copied here too, and the paste button pastes from here into the Mac."
+                         ? "Put files in Files, Veyron, Shared to see them in the Henge folder in this Mac's home folder. What you copy on the Mac is copied here too, and the paste button pastes from here into the Mac."
                          : "Once for each Mac: open Terminal on the Mac, tap this, then press Return. When macOS asks about henge-agent and local networks, choose Allow. It types \(Sharing.setUpCommand) and needs the Mac's keyboard layout to be U.S.")
                         .font(.footnote).foregroundStyle(.secondary)
                 }

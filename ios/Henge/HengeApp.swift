@@ -64,6 +64,7 @@ struct RootView: View {
             }
         }
         .preferredColorScheme(.dark)
+        .toggleStyle(SwitchToggleStyle(tint: Desk.switchOn)) // the tint is near white, which would hide a switch's knob
         .sheet(isPresented: $jit.showSetup) { JITSetupFlow() }
         .task(id: scenePhase) {
             guard scenePhase == .active else { return }

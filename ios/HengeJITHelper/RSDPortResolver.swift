@@ -104,7 +104,7 @@ enum RSDPortResolver {
 
     private static func describe(_ error: DNSServiceErrorType) -> String {
         switch Int(error) {
-        case Int(kDNSServiceErr_PolicyDenied): return "PolicyDenied: Local Network access is off for Henge"
+        case Int(kDNSServiceErr_PolicyDenied): return "PolicyDenied: Local Network access is off for Veyron"
         case Int(kDNSServiceErr_NoAuth): return "NoAuth"
         case Int(kDNSServiceErr_ServiceNotRunning): return "ServiceNotRunning"
         default: return "DNSServiceErrorType \(error)"

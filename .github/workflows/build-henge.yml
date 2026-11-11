@@ -11,7 +11,7 @@
 # your certificate carries it, and Henge falls back to file-backed guest RAM
 # without it.
 
-name: Build Henge IPA
+name: Build Veyron IPA
 
 # Manual only (Actions tab > Build Henge IPA > Run workflow): pushes to main don't build an IPA.
 on:

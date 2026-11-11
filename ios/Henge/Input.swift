@@ -232,7 +232,7 @@ struct ModifierRow: View {
         } label: {
             Text(symbol)
                 .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(on ? Color.white : Desk.text)
+                .foregroundStyle(on ? Desk.onAccent : Desk.text)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(on ? Desk.accent : Desk.raised, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
         }
@@ -249,7 +249,7 @@ private struct HeldKey: View {
     var body: some View {
         Text(label)
             .font(.system(size: 13, weight: .semibold))
-            .foregroundStyle(Desk.text)
+            .foregroundStyle(down ? Desk.onAccent : Desk.text)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(down ? Desk.accent : Desk.raised, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
             .contentShape(Rectangle())

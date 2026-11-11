@@ -1,17 +1,24 @@
 import SwiftUI
 import UIKit
 
-/// The Desk: a dark, quiet page, cards on it with a hairline edge, and one blue for what you press.
-/// A Mac's screen is the only colourful thing here.
+/// The Desk: a charcoal page, cards on it with a hairline edge, and brushed silver for what you press, as
+/// Veyron's mark is silver on charcoal. A Mac's screen is the only colourful thing here.
 enum Desk {
-    static let page = Color(red: 11 / 255, green: 12 / 255, blue: 16 / 255)
-    static let card = Color(red: 22 / 255, green: 24 / 255, blue: 31 / 255)
-    static let raised = Color(red: 35 / 255, green: 38 / 255, blue: 47 / 255)
-    static let text = Color(red: 242 / 255, green: 243 / 255, blue: 247 / 255)
-    static let dim = Color(red: 144 / 255, green: 149 / 255, blue: 164 / 255)
-    static let faint = Color(red: 106 / 255, green: 111 / 255, blue: 126 / 255)
-    static let accent = Color(red: 46 / 255, green: 107 / 255, blue: 1)
-    static let accentLight = Color(red: 91 / 255, green: 141 / 255, blue: 1)
+    static let page = Color(red: 20 / 255, green: 20 / 255, blue: 21 / 255)
+    static let card = Color(red: 28 / 255, green: 28 / 255, blue: 30 / 255)
+    static let raised = Color(red: 41 / 255, green: 41 / 255, blue: 44 / 255)
+    static let text = Color(red: 238 / 255, green: 238 / 255, blue: 239 / 255)
+    static let dim = Color(red: 152 / 255, green: 152 / 255, blue: 157 / 255)
+    static let faint = Color(red: 106 / 255, green: 106 / 255, blue: 112 / 255)
+    static let accent = Color(red: 207 / 255, green: 207 / 255, blue: 210 / 255)
+    static let accentLight = Color(red: 228 / 255, green: 228 / 255, blue: 230 / 255)
+    /// What is written on silver.
+    static let onAccent = Color(red: 22 / 255, green: 22 / 255, blue: 23 / 255)
+    /// A switch that is on: darker than the silver, so its white knob shows.
+    static let switchOn = Color(red: 132 / 255, green: 132 / 255, blue: 138 / 255)
+    /// The mark's own shading, for the one action a screen is for.
+    static let silver = LinearGradient(colors: [Color(red: 236 / 255, green: 236 / 255, blue: 237 / 255), Color(red: 168 / 255, green: 168 / 255, blue: 172 / 255)],
+                                       startPoint: .topLeading, endPoint: .bottomTrailing)
     static let good = Color(red: 57 / 255, green: 217 / 255, blue: 138 / 255)
     static let warn = Color(red: 1, green: 188 / 255, blue: 46 / 255)
     static let bad = Color(red: 1, green: 122 / 255, blue: 112 / 255)
@@ -50,10 +57,10 @@ struct DeskButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.system(size: 19, weight: .bold))
-            .foregroundStyle(enabled ? Color.white : Desk.dim)
+            .foregroundStyle(enabled ? Desk.onAccent : Desk.dim)
             .frame(maxWidth: .infinity)
             .frame(height: 58)
-            .background(enabled ? Desk.accent : Desk.raised, in: Capsule())
+            .background(enabled ? AnyShapeStyle(Desk.silver) : AnyShapeStyle(Desk.raised), in: Capsule())
             .opacity(configuration.isPressed ? 0.85 : 1)
             .scaleEffect(configuration.isPressed ? 0.985 : 1)
             .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
@@ -133,7 +140,7 @@ enum ByteText {
     }
 }
 
-/// The names the JIT setup screens (from Husk) use, in Henge's colours.
+/// The names the JIT setup screens (from Husk) use, in Veyron's colours.
 enum Theme {
     static let accent = Desk.accent
     static let accentSoft = Desk.accent.opacity(0.18)
@@ -157,10 +164,10 @@ struct PrimaryButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.system(size: 16, weight: .semibold))
-            .foregroundStyle(enabled ? Color.white : Desk.dim)
+            .foregroundStyle(enabled ? Desk.onAccent : Desk.dim)
             .frame(maxWidth: .infinity)
             .padding(.vertical, 15)
-            .background(enabled ? Desk.accent : Desk.raised, in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+            .background(enabled ? AnyShapeStyle(Desk.silver) : AnyShapeStyle(Desk.raised), in: RoundedRectangle(cornerRadius: 15, style: .continuous))
             .opacity(configuration.isPressed ? 0.85 : 1)
             .scaleEffect(configuration.isPressed ? 0.985 : 1)
             .animation(.easeOut(duration: 0.12), value: configuration.isPressed)

@@ -1,7 +1,7 @@
-//! One connection to a Mac in Henge: the picture and sound in, decoded; mouse, keyboard, controller, clipboard
+//! One connection to a Mac in Veyron: the picture and sound in, decoded; mouse, keyboard, controller, clipboard
 //! and stream settings out. The protocol is described in ios/Henge/RemoteDesktop.swift.
 //!
-//! Two forms of it exist. Every Henge build understands the first: raw H.264 one way, 6-byte input messages
+//! Two forms of it exist. Every Veyron build understands the first: raw H.264 one way, 6-byte input messages
 //! the other. Builds with protocol 2 answer the hello below by wrapping everything they send in
 //! [type][flags][0][0][length u32] messages, which adds timestamps, stream settings, the clipboard and the
 //! controller. Which one the phone speaks shows in its first byte: a raw stream starts with a zero.
@@ -210,7 +210,7 @@ fn dial(target: &Target, offset: u16) -> io::Result<Conn> {
 }
 
 /// Whether a Mac is running on that phone and what it is called, without taking the stream from anyone.
-/// None from a Henge that only has the first protocol, or when Henge is not sharing.
+/// None from a Veyron that only has the first protocol, or when Veyron is not sharing.
 pub fn status(target: &Target) -> Option<ServerInfo> {
     let c = dial(target, STATUS).ok()?;
     c.set_read_timeout(Some(Duration::from_secs(2)));
@@ -222,11 +222,11 @@ pub fn status(target: &Target) -> Option<ServerInfo> {
 fn explain(target: &Target, e: &io::Error) -> String {
     let usb = matches!(target, Target::Usb { .. });
     match e.kind() {
-        io::ErrorKind::ConnectionRefused if usb => "Henge isn't sharing a screen. Open the Mac in Henge and turn on Remote Desktop in its menu.".into(),
-        io::ErrorKind::ConnectionRefused => "Nothing answers at that address. Check that Remote Desktop and Wi-Fi are both on in Henge.".into(),
+        io::ErrorKind::ConnectionRefused if usb => "Veyron isn't sharing a screen. Open the Mac in Veyron and turn on Remote Desktop in its menu.".into(),
+        io::ErrorKind::ConnectionRefused => "Nothing answers at that address. Check that Remote Desktop and Wi-Fi are both on in Veyron.".into(),
         io::ErrorKind::NotFound if usb => "The iPhone is no longer plugged in.".into(),
-        io::ErrorKind::UnexpectedEof if !usb => "The phone closed the connection. Check the code against the one Henge shows.".into(),
-        io::ErrorKind::UnexpectedEof => "Henge stopped sharing the screen.".into(),
+        io::ErrorKind::UnexpectedEof if !usb => "The phone closed the connection. Check the code against the one Veyron shows.".into(),
+        io::ErrorKind::UnexpectedEof => "Veyron stopped sharing the screen.".into(),
         io::ErrorKind::TimedOut => "The phone did not answer in time.".into(),
         _ => format!("The connection was lost ({e})."),
     }
@@ -256,7 +256,7 @@ impl Session {
         let v = s.clone();
         std::thread::spawn(move || {
             let reason = match v.run_video(&opts) {
-                Ok(()) => "Henge stopped sharing the screen.".to_string(),
+                Ok(()) => "Veyron stopped sharing the screen.".to_string(),
                 Err(e) => explain(&v.target, &e),
             };
             *v.phase.lock().unwrap() = (Phase::Ended, reason);
@@ -372,7 +372,7 @@ impl Session {
     fn read_raw(&self, mut conn: Conn, opts: &Options) -> io::Result<()> {
         let mut dec = Decoder::open(false, opts.hardware, true)?;
         let mut meter = Meter::new(dec.name());
-        eprintln!("henge-remote: decoding with {}", dec.name());
+        eprintln!("veyron-remote: decoding with {}", dec.name());
         dec.feed(&[0], self);
         let mut buf = vec![0u8; 1 << 16];
         loop {

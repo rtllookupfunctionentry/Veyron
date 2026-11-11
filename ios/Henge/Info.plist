@@ -12,7 +12,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>Henge</string>
+	<string>Veyron</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -63,9 +63,9 @@
 		<string>_henge._tcp</string>
 	</array>
 	<key>NSCameraUsageDescription</key>
-	<string>Henge can use the volume buttons as the trackpad's mouse buttons. Receiving those presses needs the camera active; no video is recorded, saved or shown.</string>
+	<string>Veyron can use the volume buttons as the trackpad's mouse buttons. Receiving those presses needs the camera active; no video is recorded, saved or shown.</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Henge uses the local network to pair with this iPhone for JIT without a computer, and to let a computer on the same network show the Mac when you allow Wi-Fi under Remote Desktop.</string>
+	<string>Veyron uses the local network to pair with this iPhone for JIT without a computer, and to let a computer on the same network show the Mac when you allow Wi-Fi under Remote Desktop.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

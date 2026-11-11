@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Stands in for Henge on a phone, so the client can be worked on with no phone at hand.
+"""Stands in for Veyron on a phone, so the client can be worked on with no phone at hand.
 
-    python3 tests/fake-phone.py            # the first protocol: raw H.264, as every Henge build sends
+    python3 tests/fake-phone.py            # the first protocol: raw H.264, as every Veyron build sends
     python3 tests/fake-phone.py --v2       # protocol 2: framed messages, settings, ping, clipboard, status port
-    henge-remote 127.0.0.1:15901
+    veyron-remote 127.0.0.1:15901
 
 Needs ffmpeg on the PATH. The picture is ffmpeg's moving test card with its frame counter; the sound is a quiet tone.
 Everything the client sends is printed.

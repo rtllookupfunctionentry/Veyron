@@ -87,8 +87,8 @@ fn bad(what: &str) -> io::Error {
 fn call(c: &mut Conn, kind: &str, more: &[(&str, Value)]) -> io::Result<Dictionary> {
     let mut d = Dictionary::new();
     d.insert("MessageType".into(), kind.into());
-    d.insert("ClientVersionString".into(), "henge-remote".into());
-    d.insert("ProgName".into(), "henge-remote".into());
+    d.insert("ClientVersionString".into(), "veyron-remote".into());
+    d.insert("ProgName".into(), "veyron-remote".into());
     d.insert("kLibUSBMuxVersion".into(), Value::Integer(3.into()));
     for (k, v) in more {
         d.insert((*k).into(), v.clone());
@@ -130,7 +130,7 @@ pub fn devices() -> io::Result<Vec<UsbDevice>> {
     Ok(out)
 }
 
-/// A tunnel to a TCP port on the phone. `ConnectionRefused` when nothing listens there (Henge is not streaming).
+/// A tunnel to a TCP port on the phone. `ConnectionRefused` when nothing listens there (Veyron is not streaming).
 pub fn connect(device: u64, port: u16) -> io::Result<Conn> {
     let mut c = service()?;
     c.set_read_timeout(Some(Duration::from_secs(5)));
@@ -150,7 +150,7 @@ pub fn device_name(device: u64) -> Option<String> {
     let mut c = connect(device, 62078).ok()?;
     c.set_read_timeout(Some(Duration::from_secs(2)));
     let mut d = Dictionary::new();
-    d.insert("Label".into(), "henge-remote".into());
+    d.insert("Label".into(), "veyron-remote".into());
     d.insert("Request".into(), "GetValue".into());
     d.insert("Key".into(), "DeviceName".into());
     let mut body = Vec::new();

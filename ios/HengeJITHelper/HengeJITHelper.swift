@@ -75,7 +75,7 @@ private enum HengeJITWork {
                       let scriptBase64 = request.scriptBase64, !scriptBase64.isEmpty else {
                     throw NSError(domain: "HengeJITHelper", code: 2,
                                   userInfo: [NSLocalizedDescriptionKey:
-                                    "The target process or Henge's JIT script was not provided."])
+                                    "The target process or Veyron's JIT script was not provided."])
                 }
                 try StikJIT.enableJIT(
                     targetPID: targetPID,
@@ -86,7 +86,7 @@ private enum HengeJITWork {
                     forceScript: true,
                     preparationProgress: { NSLog("[HengeJIT] prepare: %@", String(describing: $0)) },
                     progress: { NSLog("[HengeJIT] %@", $0) })
-                return .init(success: true, message: "Henge detached cleanly from its built-in JIT helper." + portNote,
+                return .init(success: true, message: "Veyron detached cleanly from its built-in JIT helper." + portNote,
                              txmPresent: StikJIT.isTXMPresent)
             case .resetDDI:
                 preconditionFailure("Handled above")
@@ -132,7 +132,7 @@ final class HengeJITHelperHandler: NSObject, NSExtensionRequestHandling {
             if let data, let request = try? JSONDecoder().decode(HengeJITRequest.self, from: data) {
                 response = HengeJITWork.handle(request)
             } else {
-                response = .init(success: false, message: "Henge's JIT helper received no request.",
+                response = .init(success: false, message: "Veyron's JIT helper received no request.",
                                  txmPresent: nil)
             }
             let item = NSExtensionItem()

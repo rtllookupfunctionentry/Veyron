@@ -1,9 +1,9 @@
-//! Henge Remote: shows the Mac that Henge runs on an iPhone and sends it this computer's mouse, keyboard
+//! Veyron Remote: shows the Mac that Veyron runs on an iPhone and sends it this computer's mouse, keyboard
 //! and controller. One window, SDL for everything the system does, egui for what is drawn over the picture.
 //!
-//!     henge-remote                       look for phones, show the list
-//!     henge-remote 192.168.1.20:5901 --code 123456     connect straight away
-//!     henge-remote --background          start hidden and wait for a Mac (what "Start at login" runs)
+//!     veyron-remote                       look for phones, show the list
+//!     veyron-remote 192.168.1.20:5901 --code 123456     connect straight away
+//!     veyron-remote --background          start hidden and wait for a Mac (what "Start at login" runs)
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 mod config;
@@ -160,22 +160,37 @@ unsafe extern "C" fn tray_chosen(userdata: *mut c_void, _entry: *mut SDL_TrayEnt
 /// has no place for one; the window then simply stays.
 unsafe fn make_tray(wake: u32) -> *mut SDL_Tray {
     unsafe {
-        // The app's mark, drawn rather than loaded: a lintel on two stones.
+        // The app's mark, drawn rather than loaded: each of its two shapes row by row, from where the row
+        // enters the shape to where it leaves.
         let icon = SDL_CreateSurface(32, 32, SDL_PIXELFORMAT_RGBA32);
         if icon.is_null() {
             return std::ptr::null_mut();
         }
-        let stone = SDL_MapSurfaceRGBA(icon, 0xf2, 0xa6, 0x5a, 0xff);
-        for (x, y, w, h) in [(4, 6, 24, 5), (7, 13, 6, 14), (19, 13, 6, 14)] {
-            SDL_FillSurfaceRect(icon, &SDL_Rect { x, y, w, h }, stone);
+        for (shape, grey) in ui::MARK.iter().zip([0xe2u8, 0xa9]) {
+            let ink = SDL_MapSurfaceRGBA(icon, grey, grey, grey, 0xff);
+            let at = |(x, y): (f32, f32)| ((x - 230.0) * 0.05 + 1.75, (y - 262.0) * 0.05 + 2.8); // 570 x 528 into 32 x 32
+            for row in 0..32 {
+                let y = row as f32 + 0.5;
+                let (mut left, mut right) = (f32::MAX, f32::MIN);
+                for i in 0..shape.len() {
+                    let ((x0, y0), (x1, y1)) = (at(shape[i]), at(shape[(i + 1) % shape.len()]));
+                    if (y0 <= y) != (y1 <= y) {
+                        let x = x0 + (x1 - x0) * (y - y0) / (y1 - y0);
+                        (left, right) = (left.min(x), right.max(x));
+                    }
+                }
+                if right > left {
+                    SDL_FillSurfaceRect(icon, &SDL_Rect { x: left.round() as i32, y: row, w: (right - left).round().max(1.0) as i32, h: 1 }, ink);
+                }
+            }
         }
-        let tray = SDL_CreateTray(icon, c"Henge Remote".as_ptr());
+        let tray = SDL_CreateTray(icon, c"Veyron Remote".as_ptr());
         SDL_DestroySurface(icon);
         if tray.is_null() {
             return tray;
         }
         let menu = SDL_CreateTrayMenu(tray);
-        for (label, code) in [(c"Open Henge Remote", 1usize), (c"Quit", 2)] {
+        for (label, code) in [(c"Open Veyron Remote", 1usize), (c"Quit", 2)] {
             let entry = SDL_InsertTrayEntryAt(menu, -1, label.as_ptr(), SDL_TRAYENTRY_BUTTON);
             SDL_SetTrayEntryCallback(entry, Some(tray_chosen), ((wake as usize) << 8 | code) as *mut c_void);
         }
@@ -195,11 +210,11 @@ struct Live {
 
 unsafe fn run(background: bool, direct: Option<(String, String)>) {
     unsafe {
-        SDL_SetAppMetadata(c"Henge Remote".as_ptr(), c"0.1.0".as_ptr(), c"henge-remote".as_ptr());
+        SDL_SetAppMetadata(c"Veyron Remote".as_ptr(), c"0.1.0".as_ptr(), c"veyron-remote".as_ptr());
         SDL_SetHint(SDL_HINT_AUDIO_DEVICE_SAMPLE_FRAMES, c"256".as_ptr());
         SDL_SetHint(SDL_HINT_MOUSE_FOCUS_CLICKTHROUGH, c"1".as_ptr());
         if !SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMEPAD) {
-            eprintln!("henge-remote: SDL could not start: {}", CStr::from_ptr(SDL_GetError()).to_string_lossy());
+            eprintln!("veyron-remote: SDL could not start: {}", CStr::from_ptr(SDL_GetError()).to_string_lossy());
             std::process::exit(1);
         }
         SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
@@ -209,10 +224,10 @@ unsafe fn run(background: bool, direct: Option<(String, String)>) {
         if background {
             flags |= SDL_WINDOW_HIDDEN;
         }
-        let window = SDL_CreateWindow(c"Henge Remote".as_ptr(), 1040, 680, flags);
+        let window = SDL_CreateWindow(c"Veyron Remote".as_ptr(), 1040, 680, flags);
         let context = if window.is_null() { std::ptr::null_mut() } else { SDL_GL_CreateContext(window) };
         if context.is_null() {
-            eprintln!("henge-remote: no OpenGL 3.3 window: {}", CStr::from_ptr(SDL_GetError()).to_string_lossy());
+            eprintln!("veyron-remote: no OpenGL 3.3 window: {}", CStr::from_ptr(SDL_GetError()).to_string_lossy());
             std::process::exit(1);
         }
         SDL_SetWindowMinimumSize(window, 520, 420);
@@ -277,7 +292,7 @@ unsafe fn run(background: bool, direct: Option<(String, String)>) {
             // ---- what the system has to say ----
             let mut ev: SDL_Event = std::mem::zeroed();
             let mut have = SDL_WaitEventTimeout(&mut ev, wait.as_millis().clamp(1, 500) as i32);
-            // The mouse goes to the Mac by position: the setting, a Henge that can, and a picture to point at.
+            // The mouse goes to the Mac by position: the setting, a Veyron that can, and a picture to point at.
             let seamless_mode = cfg.seamless && live.as_ref().is_some_and(|l| l.session.info().is_some_and(|i| i.pointer));
             let seamless = seamless_mode && !captured && !st.settings && retry.is_none() && video.width > 0 && live.as_ref().is_some_and(|l| l.session.phase().0 == Phase::Live);
             while have {
@@ -321,7 +336,7 @@ unsafe fn run(background: bool, direct: Option<(String, String)>) {
                         }
                     }
                     SDL_EVENT_MOUSE_BUTTON_DOWN | SDL_EVENT_MOUSE_BUTTON_UP if captured => {
-                        // SDL: 1 left, 2 middle, 3 right. Henge: 0 left, 1 right, 2 middle.
+                        // SDL: 1 left, 2 middle, 3 right. Veyron: 0 left, 1 right, 2 middle.
                         let button = match ev.button.button { 1 => 0, 3 => 1, 2 => 2, _ => 255 };
                         if let (Some(s), true) = (&session, button != 255) {
                             flush_move(s, &mut move_x, &mut move_y); // a click lands where the pointer is by then
@@ -492,7 +507,7 @@ unsafe fn run(background: bool, direct: Option<(String, String)>) {
                     connect = Some((target.clone(), title.clone(), false));
                 }
             } else if live.is_none() && cfg.auto_connect && !hold_auto && now.duration_since(tried_auto) > Duration::from_secs(4) {
-                // A Henge that says whether a Mac runs is only tried when one does; an older one is simply tried.
+                // A Veyron that says whether a Mac runs is only tried when one does; an older one is simply tried.
                 if let Some(f) = usb.iter().find(|f| f.info.as_ref().is_none_or(|i| i.running)) {
                     tried_auto = now;
                     connect = Some((f.target.clone(), f.title.clone(), true));
