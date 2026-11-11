@@ -60,11 +60,12 @@
 	<array>
 		<string>_remotepairing-pairable-host._tcp</string>
 		<string>_remotepairing._tcp</string>
+		<string>_henge._tcp</string>
 	</array>
 	<key>NSCameraUsageDescription</key>
 	<string>Henge can use the volume buttons as the trackpad's mouse buttons. Receiving those presses needs the camera active; no video is recorded, saved or shown.</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Henge uses the local network to pair with this iPhone for JIT, without a computer.</string>
+	<string>Henge uses the local network to pair with this iPhone for JIT without a computer, and to let a computer on the same network show the Mac when you allow Wi-Fi under Remote Desktop.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

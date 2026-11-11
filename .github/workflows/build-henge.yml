@@ -24,6 +24,8 @@ on:
     paths-ignore:
       - 'tools/henge-remote.py'
       - 'tools/henge-inspect.py'
+      - 'remote/**'
+      - '.github/workflows/build-remote.yml'
       - 'docs/**'
       - '**.md'
       - '.gitignore'

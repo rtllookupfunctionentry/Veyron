@@ -32,8 +32,10 @@ enum Sharing {
     static func followMacClipboard() async {
         while !Task.isCancelled {
             if let text = henge_share_take_clipboard() {
-                UIPasteboard.general.string = String(cString: text)
+                let copied = String(cString: text)
                 free(text)
+                UIPasteboard.general.string = copied
+                RemoteDesktop.shared.macCopied(copied) // a computer showing this Mac follows its clipboard too
             }
             try? await Task.sleep(nanoseconds: 500_000_000)
         }

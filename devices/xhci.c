@@ -126,6 +126,74 @@ static const uint8_t tp_config_desc[34] = {
 
 static const char *const tp_strings[] = {NULL, "Apple Inc.", "Magic Trackpad 2", "HengeVM"};
 
+/* Port 3: a Sony DualShock 4 (the second model, CUH-ZCT2: vendor 0x054C, product
+   0x09CC), which the guest's GameController framework knows by its IDs and reads
+   as plain HID. The report descriptor is the real pad's, byte for byte (507
+   bytes): input report 1 is 64 bytes, of which it only spells out the first
+   nine. The real pad also has three audio interfaces and an interrupt OUT
+   endpoint. We have neither, so the guest sends its output reports (light bar,
+   rumble) as SET_REPORT on endpoint 0, where they are accepted and dropped. */
+#define PAD_DEV 2 /* its place in devs[], which is also its port, counted from 0 */
+
+static const uint8_t pad_report_desc[] = {
+    0x05, 0x01, 0x09, 0x05, 0xa1, 0x01,       /* usage page (generic desktop), usage (game pad), collection (application) */
+    0x85, 0x01,                               /* report ID 1 */
+    0x09, 0x30, 0x09, 0x31, 0x09, 0x32, 0x09, 0x35, /* X, Y, Z, Rz: the two sticks, 0..255 */
+    0x15, 0x00, 0x26, 0xff, 0x00, 0x75, 0x08, 0x95, 0x04, 0x81, 0x02,
+    0x09, 0x39, 0x15, 0x00, 0x25, 0x07, 0x35, 0x00, 0x46, 0x3b, 0x01, /* hat switch: 0..7 is 0..315 degrees, out of range when let go */
+    0x65, 0x14, 0x75, 0x04, 0x95, 0x01, 0x81, 0x42, 0x65, 0x00,
+    0x05, 0x09, 0x19, 0x01, 0x29, 0x0e, 0x15, 0x00, 0x25, 0x01, /* buttons 1-14 */
+    0x75, 0x01, 0x95, 0x0e, 0x81, 0x02,
+    0x06, 0x00, 0xff, 0x09, 0x20, 0x75, 0x06, 0x95, 0x01, /* vendor page 0xff00: a 6-bit report counter */
+    0x15, 0x00, 0x25, 0x7f, 0x81, 0x02,
+    0x05, 0x01, 0x09, 0x33, 0x09, 0x34,       /* Rx, Ry: the two triggers, 0..255 */
+    0x15, 0x00, 0x26, 0xff, 0x00, 0x75, 0x08, 0x95, 0x02, 0x81, 0x02,
+    0x06, 0x00, 0xff, 0x09, 0x21, 0x95, 0x36, 0x81, 0x02, /* vendor: the other 54 bytes (motion, battery, touchpad) */
+    0x85, 0x05, 0x09, 0x22, 0x95, 0x1f, 0x91, 0x02, /* output report 5, 31 bytes (rumble, light bar) */
+    /* Feature reports, all vendor-defined: calibration (2), addresses (0x12, 0x81) and firmware (0xa3) among them. */
+    0x85, 0x04, 0x09, 0x23, 0x95, 0x24, 0xb1, 0x02, 0x85, 0x02, 0x09, 0x24, 0x95, 0x24, 0xb1, 0x02,
+    0x85, 0x08, 0x09, 0x25, 0x95, 0x03, 0xb1, 0x02, 0x85, 0x10, 0x09, 0x26, 0x95, 0x04, 0xb1, 0x02,
+    0x85, 0x11, 0x09, 0x27, 0x95, 0x02, 0xb1, 0x02, 0x85, 0x12, 0x06, 0x02, 0xff, 0x09, 0x21, 0x95,
+    0x0f, 0xb1, 0x02, 0x85, 0x13, 0x09, 0x22, 0x95, 0x16, 0xb1, 0x02, 0x85, 0x14, 0x06, 0x05, 0xff,
+    0x09, 0x20, 0x95, 0x10, 0xb1, 0x02, 0x85, 0x15, 0x09, 0x21, 0x95, 0x2c, 0xb1, 0x02, 0x06, 0x80,
+    0xff, 0x85, 0x80, 0x09, 0x20, 0x95, 0x06, 0xb1, 0x02, 0x85, 0x81, 0x09, 0x21, 0x95, 0x06, 0xb1,
+    0x02, 0x85, 0x82, 0x09, 0x22, 0x95, 0x05, 0xb1, 0x02, 0x85, 0x83, 0x09, 0x23, 0x95, 0x01, 0xb1,
+    0x02, 0x85, 0x84, 0x09, 0x24, 0x95, 0x04, 0xb1, 0x02, 0x85, 0x85, 0x09, 0x25, 0x95, 0x06, 0xb1,
+    0x02, 0x85, 0x86, 0x09, 0x26, 0x95, 0x06, 0xb1, 0x02, 0x85, 0x87, 0x09, 0x27, 0x95, 0x23, 0xb1,
+    0x02, 0x85, 0x88, 0x09, 0x28, 0x95, 0x3f, 0xb1, 0x02, 0x85, 0x89, 0x09, 0x29, 0x95, 0x02, 0xb1,
+    0x02, 0x85, 0x90, 0x09, 0x30, 0x95, 0x05, 0xb1, 0x02, 0x85, 0x91, 0x09, 0x31, 0x95, 0x03, 0xb1,
+    0x02, 0x85, 0x92, 0x09, 0x32, 0x95, 0x03, 0xb1, 0x02, 0x85, 0x93, 0x09, 0x33, 0x95, 0x0c, 0xb1,
+    0x02, 0x85, 0x94, 0x09, 0x34, 0x95, 0x3f, 0xb1, 0x02, 0x85, 0xa0, 0x09, 0x40, 0x95, 0x06, 0xb1,
+    0x02, 0x85, 0xa1, 0x09, 0x41, 0x95, 0x01, 0xb1, 0x02, 0x85, 0xa2, 0x09, 0x42, 0x95, 0x01, 0xb1,
+    0x02, 0x85, 0xa3, 0x09, 0x43, 0x95, 0x30, 0xb1, 0x02, 0x85, 0xa4, 0x09, 0x44, 0x95, 0x0d, 0xb1,
+    0x02, 0x85, 0xf0, 0x09, 0x47, 0x95, 0x3f, 0xb1, 0x02, 0x85, 0xf1, 0x09, 0x48, 0x95, 0x3f, 0xb1,
+    0x02, 0x85, 0xf2, 0x09, 0x49, 0x95, 0x0f, 0xb1, 0x02, 0x85, 0xa7, 0x09, 0x4a, 0x95, 0x01, 0xb1,
+    0x02, 0x85, 0xa8, 0x09, 0x4b, 0x95, 0x01, 0xb1, 0x02, 0x85, 0xa9, 0x09, 0x4c, 0x95, 0x08, 0xb1,
+    0x02, 0x85, 0xaa, 0x09, 0x4e, 0x95, 0x01, 0xb1, 0x02, 0x85, 0xab, 0x09, 0x4f, 0x95, 0x39, 0xb1,
+    0x02, 0x85, 0xac, 0x09, 0x50, 0x95, 0x39, 0xb1, 0x02, 0x85, 0xad, 0x09, 0x51, 0x95, 0x0b, 0xb1,
+    0x02, 0x85, 0xae, 0x09, 0x52, 0x95, 0x01, 0xb1, 0x02, 0x85, 0xaf, 0x09, 0x53, 0x95, 0x02, 0xb1,
+    0x02, 0x85, 0xb0, 0x09, 0x54, 0x95, 0x3f, 0xb1, 0x02, 0x85, 0xe0, 0x09, 0x57, 0x95, 0x02, 0xb1,
+    0x02, 0x85, 0xb3, 0x09, 0x55, 0x95, 0x3f, 0xb1, 0x02, 0x85, 0xb4, 0x09, 0x55, 0x95, 0x3f, 0xb1,
+    0x02, 0x85, 0xb5, 0x09, 0x56, 0x95, 0x3f, 0xb1, 0x02, 0x85, 0xd0, 0x09, 0x58, 0x95, 0x3f, 0xb1,
+    0x02, 0x85, 0xd4, 0x09, 0x59, 0x95, 0x3f, 0xb1, 0x02, 0xc0,
+};
+
+static const uint8_t pad_device_desc[18] = {
+    18, 1, 0x00, 0x02, 0, 0, 0, 64, /* USB 2.0, class per interface, EP0 64 bytes */
+    0x4c, 0x05, 0xcc, 0x09,         /* vendor Sony, product 0x09CC (DualShock 4, CUH-ZCT2) */
+    0x00, 0x01, 1, 2, 0, 1,         /* bcdDevice 1.00, strings 1-2, no serial number, one configuration */
+};
+
+static const uint8_t pad_config_desc[34] = {
+    9, 2, 34, 0, 1, 1, 0, 0xc0, 250,          /* one interface, self-powered, 500 mA */
+    9, 4, 0, 0, 1, 3, 0, 0, 0,                /* interface 0: HID, no boot protocol */
+    9, 0x21, 0x11, 0x01, 0, 1, 0x22, sizeof pad_report_desc & 0xff, sizeof pad_report_desc >> 8, /* HID 1.11, one report descriptor */
+    7, 5, 0x84, 3, 64, 0, 5,                  /* EP4 IN, interrupt, 64 bytes, every 5 ms */
+};
+
+/* The pad has no serial number string; the empty one is there for a guest that asks anyway. */
+static const char *const pad_strings[] = {NULL, "Sony Interactive Entertainment", "Wireless Controller", ""};
+
 struct HvXhciDev {
     const char *const *strings;
     const uint8_t *device_desc;
@@ -136,6 +204,7 @@ struct HvXhciDev {
 static const struct HvXhciDev devs[HV_XHCI_DEVICES] = {
     {kbd_strings, kbd_device_desc, kbd_config_desc, kbd_report_desc, sizeof kbd_report_desc},
     {tp_strings, tp_device_desc, tp_config_desc, tp_report_desc, sizeof tp_report_desc},
+    {pad_strings, pad_device_desc, pad_config_desc, pad_report_desc, sizeof pad_report_desc},
 };
 
 static int xlog(void) {
@@ -316,6 +385,44 @@ static void tp_select(HvXhci *x, int reg) {
     x->tp_f1_len = 5;
 }
 
+/* The DualShock 4's feature reports a host reads when it finds the pad, report ID
+   first: the motion sensors' calibration (2), the pad's Bluetooth address followed
+   by its paired host's (0x12; 0x81 is the pad's alone) and the firmware's build
+   date and versions (0xa3). Calibration and firmware are one real pad's, as
+   hid-tools' DualShock 4 model replays them; the address is made up (locally
+   administered) and no host is paired. Returns the length, or 0 for any other. */
+static int pad_feature(int rid, uint8_t *out) {
+    static const uint8_t f02[37] = {
+        0x02, 0x1e, 0x00, 0x05, 0x00, 0xe2, 0xff, 0xf2, 0x22, 0x4f, 0xdd, 0xbe, 0x22, 0x4d, 0xdd, 0x8d,
+        0x22, 0x39, 0xdd, 0x1c, 0x02, 0x1c, 0x02, 0xe3, 0x1f, 0x8b, 0xdf, 0x8c, 0x1e, 0xb4, 0xde, 0x30,
+        0x20, 0x71, 0xe0, 0x10, 0x00,
+    };
+    static const uint8_t f12[16] = {0x12, 0x45, 0x47, 0x4e, 0x45, 0x48, 0x02}; /* 02:48:45:4e:47:45, low byte first */
+    static const uint8_t fa3[49] = {
+        0xa3, 0x41, 0x70, 0x72, 0x20, 0x20, 0x38, 0x20, 0x32, 0x30, 0x31, 0x34, 0x00, 0x00, 0x00, 0x00, /* "Apr  8 2014" */
+        0x00, 0x30, 0x39, 0x3a, 0x34, 0x36, 0x3a, 0x30, 0x36, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* "09:46:06" */
+        0x00, 0x00, 0x01, 0x00, 0x43, 0x03, 0x00, 0x00, 0x00, 0x51, 0x00, 0x05, 0x00, 0x00, 0x80, 0x03,
+        0x00,
+    };
+    switch (rid) {
+    case 0x02: memcpy(out, f02, sizeof f02); return (int)sizeof f02;
+    case 0x12: memcpy(out, f12, sizeof f12); return (int)sizeof f12;
+    case 0x81: memcpy(out, f12, 7); out[0] = 0x81; return 7;
+    case 0xa3: memcpy(out, fa3, sizeof fa3); return (int)sizeof fa3;
+    default: return 0;
+    }
+}
+
+/* Queue the pad's current report (x->mu held). A full queue gives up its newest
+   entry: whatever else is lost, the guest must end on the state the pad is in, or
+   a button let go while the guest was not reading would stay down. */
+static void pad_queue(HvXhci *x) {
+    if (x->pad_rtail - x->pad_rhead == HV_PAD_REPORTS) x->pad_rtail--;
+    uint8_t *r = x->pad_reports[x->pad_rtail++ % HV_PAD_REPORTS];
+    memcpy(r, x->pad_state, HV_PAD_REPORT_LEN);
+    r[7] |= (uint8_t)(x->pad_seq++ << 2); /* the counter shares a byte with the PS button */
+}
+
 /* Answer a SETUP on endpoint 0. Returns the reply length (data to send for IN
    requests), or -1 to stall. */
 static int control(HvXhci *x, int slot, const uint8_t setup[8], uint8_t *out, int max) {
@@ -329,6 +436,12 @@ static int control(HvXhci *x, int slot, const uint8_t setup[8], uint8_t *out, in
     if (x->slots[slot].dev == 1 && x->tp_reqs < 80) {
         x->tp_reqs++;
         fprintf(stderr, "hengevm: xhci: tp request %02x %02x value %04x index %04x len %u\n",
+                type, req, value, setup[4] | setup[5] << 8, setup[6] | setup[7] << 8);
+    }
+    /* The controller's too: which reports the guest's GameController reads is not written down anywhere. */
+    if (x->slots[slot].dev == PAD_DEV && x->pad_reqs < 80) {
+        x->pad_reqs++;
+        fprintf(stderr, "hengevm: xhci: pad request %02x %02x value %04x index %04x len %u\n",
                 type, req, value, setup[4] | setup[5] << 8, setup[6] | setup[7] << 8);
     }
     const uint8_t *src = NULL;
@@ -367,13 +480,35 @@ static int control(HvXhci *x, int slot, const uint8_t setup[8], uint8_t *out, in
         src = tmp, len = 1;
     } else if (type == 0x00 && req == 9) { /* SET_CONFIGURATION */
         x->slots[slot].configured = value & 0xff;
+        if (x->slots[slot].dev == PAD_DEV && (value & 0xff)) {
+            /* The real pad reports all the time. Ours only on a change, so it starts with
+               where it is now, and not with what happened before the guest was listening. */
+            pthread_mutex_lock(&x->mu);
+            x->pad_rhead = x->pad_rtail;
+            pad_queue(x);
+            pthread_mutex_unlock(&x->mu);
+        }
         return 0;
     } else if (type == 0x81 && req == 10) { /* GET_INTERFACE */
         tmp[0] = 0;
         src = tmp, len = 1;
     } else if (type == 0xa1 && req == 1) { /* GET_REPORT: wValue is (type << 8) | report ID */
         if (x->slots[slot].dev == 0) src = x->state, len = 8;
-        else {
+        else if (x->slots[slot].dev == PAD_DEV) {
+            int rtype = value >> 8, rid = value & 0xff;
+            if (rtype == 1 && rid == 0x01) { /* input: the current state */
+                pthread_mutex_lock(&x->mu);
+                memcpy(tmp, x->pad_state, HV_PAD_REPORT_LEN);
+                pthread_mutex_unlock(&x->mu);
+                src = tmp, len = HV_PAD_REPORT_LEN;
+            } else if (rtype == 3 && (len = pad_feature(rid, tmp)) > 0) {
+                src = tmp;
+            } else { /* the descriptor's other reports: zeros, as long as the guest asked for */
+                memset(out, 0, (size_t)max);
+                if (max) out[0] = (uint8_t)rid;
+                return max;
+            }
+        } else {
             int rtype = value >> 8, rid = value & 0xff;
             if (rtype == 3) { /* feature: the sensor-configuration registers */
                 if (rid == 0x01) { /* the header for the register just selected */
@@ -429,7 +564,10 @@ static void run_ep0(HvXhci *x, int slot) {
     HvXhciRing *r = &x->slots[slot].ep[1];
     uint32_t trb[4];
     uint64_t at;
-    uint8_t setup[8], reply[256];
+    uint8_t setup[8], reply[512];
+    /* Only the controller has a reply longer than 256 bytes (its report descriptor);
+       the other two keep the limit they have always had. */
+    int room = x->slots[slot].dev == PAD_DEV ? (int)sizeof reply : 256;
     int reply_len = 0, stalled = 0;
     while (ring_peek(x, r, trb, &at)) {
         int type = (trb[3] >> 10) & 0x3f;
@@ -437,7 +575,7 @@ static void run_ep0(HvXhci *x, int slot) {
         if (type == TRB_SETUP) {
             memcpy(setup, trb, 8);
             uint16_t wlen = (uint16_t)(setup[6] | setup[7] << 8);
-            reply_len = control(x, slot, setup, reply, wlen < sizeof reply ? wlen : (int)sizeof reply);
+            reply_len = control(x, slot, setup, reply, wlen < room ? wlen : room);
             stalled = reply_len < 0;
             ring_advance(r);
             if (stalled) {
@@ -505,6 +643,20 @@ static void run_ep_in(HvXhci *x, int slot) {
             wr(x, buf, x->reports[x->rhead % HV_XHCI_REPORTS], n);
             x->rhead++;
             x->delivered++;
+            transfer_event(x, at, n < want ? CC_SHORT_PACKET : CC_SUCCESS, want - n, slot, dci);
+        }
+    } else if (s->dev == PAD_DEV) {
+        while (x->pad_rhead != x->pad_rtail && ring_peek(x, r, trb, &at)) {
+            int type = (trb[3] >> 10) & 0x3f;
+            ring_advance(r);
+            if (type != TRB_NORMAL) continue;
+            uint64_t buf = (uint64_t)trb[1] << 32 | trb[0];
+            uint32_t want = trb[2] & 0x1ffff;
+            uint32_t n = want < HV_PAD_REPORT_LEN ? want : HV_PAD_REPORT_LEN;
+            wr(x, buf, x->pad_reports[x->pad_rhead % HV_PAD_REPORTS], n);
+            x->pad_rhead++;
+            x->pad_delivered++;
+            if (x->pad_delivered <= 4) fprintf(stderr, "hengevm: xhci: pad: %u bytes to the guest (delivered %llu)\n", n, (unsigned long long)x->pad_delivered);
             transfer_event(x, at, n < want ? CC_SHORT_PACKET : CC_SUCCESS, want - n, slot, dci);
         }
     } else {
@@ -701,12 +853,28 @@ static void run_commands(HvXhci *x) {
 /* ---- ports ---- */
 
 /* Port 1 is the full-speed keyboard; port 2 is the high-speed trackpad, as the real
-   Magic Trackpad 2 is. */
+   Magic Trackpad 2 is. Port 3 is the controller's, and pad_plug's to fill. */
 static void port_connect(HvXhci *x) {
-    for (int p = 0; p < HV_XHCI_PORTS; p++) {
+    for (int p = 0; p < PAD_DEV; p++) {
         x->portsc[p] = PORT_PP | PORT_CCS | PORT_CSC | (uint32_t)(p ? SPEED_HIGH : SPEED_FULL) << PORT_SPEED_SHIFT | 7u << PORT_PLS_SHIFT;
         port_event(x, p);
     }
+}
+
+/* CPU thread: plug the controller into port 3 or pull it out, whichever
+   hv_xhci_gamepad asked for last. The guest hears of it as of any hot-plug, by a
+   port status change; full speed, as the real DualShock 4 is. */
+static void pad_plug(HvXhci *x) {
+    pthread_mutex_lock(&x->mu);
+    int on = x->pad_on;
+    pthread_mutex_unlock(&x->mu);
+    if (on == !!(x->portsc[PAD_DEV] & PORT_CCS)) return;
+    x->portsc[PAD_DEV] = on ? PORT_PP | PORT_CCS | PORT_CSC | (uint32_t)SPEED_FULL << PORT_SPEED_SHIFT | 7u << PORT_PLS_SHIFT
+                            : PORT_PP | PORT_CSC | 5u << PORT_PLS_SHIFT; /* nothing there: RxDetect */
+    x->pad_reqs = 0; /* log each plug's handshake and first reports afresh */
+    x->pad_delivered = 0;
+    fprintf(stderr, "hengevm: xhci: pad %s\n", on ? "plugged in" : "unplugged");
+    port_event(x, PAD_DEV);
 }
 
 static void port_write(HvXhci *x, int p, uint32_t v) {
@@ -760,8 +928,12 @@ static void reset(HvXhci *x) {
     x->tp_db = 0;
     x->tp_multi_logs = 0;
     x->tp_f1_len = 0;
-    for (int p = 0; p < HV_XHCI_PORTS; p++)
+    x->pad_rhead = x->pad_rtail = 0;
+    x->pad_delivered = 0;
+    x->pad_reqs = 0;
+    for (int p = 0; p < PAD_DEV; p++)
         x->portsc[p] = PORT_PP | PORT_CCS | PORT_CSC | (uint32_t)(p ? SPEED_HIGH : SPEED_FULL) << PORT_SPEED_SHIFT | 7u << PORT_PLS_SHIFT;
+    x->portsc[PAD_DEV] = PORT_PP | 5u << PORT_PLS_SHIFT; /* empty; pad_plug fills it again if the controller is still in use */
     update_irq(x);
 }
 
@@ -789,7 +961,7 @@ static uint64_t bar_read(HvPciDev *d, int bar, uint64_t off, unsigned size) {
         if (size == 8 && i + 1 < 8) v |= (uint64_t)cap[i + 1] << 32;
         v >>= 8 * (off & 3);
     } else if (off >= XECP && off < XECP + 16) { /* Supported Protocol: USB 2.0 on every port */
-        static const uint32_t ext[4] = {2u | 0x0200u << 16, 0x20425355, 1u | ((1u << HV_XHCI_PORTS) - 1u) << 8, 0};
+        static const uint32_t ext[4] = {2u | 0x0200u << 16, 0x20425355, 1u | (uint32_t)HV_XHCI_PORTS << 8, 0}; /* ports 1 to 3 */
         uint32_t i = (uint32_t)(off - XECP) / 4;
         v = ext[i];
         if (size == 8 && i + 1 < 4) v |= (uint64_t)ext[i + 1] << 32;
@@ -1112,8 +1284,56 @@ void hv_xhci_touch_button(HvXhci *x, int down) {
     hv_machine_wake(x->m);
 }
 
+/* ---- the controller's reports ---- */
+
+/* Input report 1 as the real pad sends it over USB (Linux's hid-playstation names
+   the fields): the sticks, the hat and the buttons, the triggers, and then motion,
+   battery and touchpad bytes, which here never change. */
+static void pad_build(uint8_t *r, uint32_t buttons, const int16_t axes[6]) {
+    /* Where each button sits (hv_xhci_gamepad's bits 0-10): report byte, mask. */
+    static const uint8_t where[11][2] = {
+        {5, 0x20}, {5, 0x40}, {5, 0x10}, {5, 0x80}, /* cross, circle, square, triangle */
+        {6, 0x10}, {7, 0x01}, {6, 0x20},            /* share, PS, options */
+        {6, 0x40}, {6, 0x80}, {6, 0x01}, {6, 0x02}, /* L3, R3, L1, R1 */
+    };
+    /* The hat by the d-pad's bits (up 1, down 2, left 4, right 8): 0 is up, then
+       clockwise by 45 degrees; 8 is let go. Opposite directions cancel. */
+    static const uint8_t hat[16] = {8, 0, 4, 8, 6, 7, 5, 6, 2, 1, 3, 2, 8, 0, 4, 8};
+    memset(r, 0, HV_PAD_REPORT_LEN);
+    r[0] = 0x01;
+    for (int i = 0; i < 4; i++) r[1 + i] = (uint8_t)((axes[i] + 32768) >> 8); /* 0x80 is the middle */
+    r[5] = hat[(buttons >> 11) & 0xf];
+    for (int i = 0; i < 11; i++)
+        if (buttons >> i & 1) r[where[i][0]] |= where[i][1];
+    for (int i = 0; i < 2; i++) {
+        r[8 + i] = (uint8_t)(axes[4 + i] < 0 ? 0 : axes[4 + i] >> 7);
+        if (r[8 + i]) r[6] |= (uint8_t)(0x04 << i); /* L2 and R2 are buttons too */
+    }
+    r[30] = 0x1b; /* on the cable, battery full */
+    /* Three touchpad frames of nine bytes, two fingers each, bit 7 set on every finger: not touching. */
+    for (int i = 0; i < 3; i++) r[35 + 9 * i] = r[39 + 9 * i] = 0x80;
+}
+
+void hv_xhci_gamepad(HvXhci *x, uint32_t buttons, const int16_t axes[6]) {
+    if (!x) return;
+    uint8_t r[HV_PAD_REPORT_LEN];
+    if (axes) pad_build(r, buttons, axes);
+    pthread_mutex_lock(&x->mu);
+    int changed = x->pad_on != (axes != NULL);
+    x->pad_on = axes != NULL;
+    if (!axes) x->pad_rhead = x->pad_rtail; /* nobody is left to read them */
+    else if (memcmp(r, x->pad_state, sizeof r)) {
+        memcpy(x->pad_state, r, sizeof r);
+        pad_queue(x);
+        changed = 1;
+    }
+    pthread_mutex_unlock(&x->mu);
+    if (changed) hv_machine_wake(x->m);
+}
+
 void hv_xhci_poll(HvXhci *x) {
     if (!x) return;
+    pad_plug(x);
     for (int slot = 1; slot <= HV_XHCI_SLOTS; slot++)
         if (x->slots[slot].dev >= 0) run_ep_in(x, slot);
 }

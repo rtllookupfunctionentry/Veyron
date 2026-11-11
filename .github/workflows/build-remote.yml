@@ -1,0 +1,86 @@
+# Builds Henge Remote (remote/), the desktop app that shows and controls the Mac Henge runs on a phone,
+# for Linux, Windows and macOS. Each job leaves an artifact: henge-remote-<system>-<sha>.
+#
+# What each needs to run:
+#   Linux    FFmpeg 6 (libavcodec.so.60) from the distribution; SDL3 is built in.
+#   Windows  nothing: FFmpeg's DLLs are in the zip next to the program. USB needs Apple's device service
+#            (it comes with iTunes or the Apple Devices app).
+#   macOS    `brew install ffmpeg` (the program links Homebrew's FFmpeg; SDL3 is built in).
+
+name: Build Henge Remote
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches:
+      - '**'
+    paths:
+      - 'remote/**'
+      - '.github/workflows/build-remote.yml'
+
+defaults:
+  run:
+    working-directory: remote
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config cmake ninja-build libavcodec-dev libavutil-dev \
+            libwayland-dev libxkbcommon-dev wayland-protocols libdecor-0-dev libegl1-mesa-dev libgl1-mesa-dev libgles2-mesa-dev \
+            libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxfixes-dev libxss-dev libxtst-dev \
+            libasound2-dev libpulse-dev libpipewire-0.3-dev libdbus-1-dev libudev-dev libdrm-dev libgbm-dev
+      - name: Build
+        run: cargo build --release --locked --features bundled-sdl
+      - name: The stand-in phone's script parses
+        run: python3 -m py_compile tests/fake-phone.py
+      - name: Package
+        run: |
+          mkdir -p out/henge-remote
+          cp target/release/henge-remote install.sh out/henge-remote/
+          cp -r assets out/henge-remote/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: henge-remote-linux-${{ github.sha }}
+          path: remote/out
+
+  macos:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependencies
+        run: brew install ffmpeg pkg-config cmake
+      - name: Build
+        run: cargo build --release --locked --features bundled-sdl
+      - uses: actions/upload-artifact@v4
+        with:
+          name: henge-remote-macos-${{ github.sha }}
+          path: remote/target/release/henge-remote
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: FFmpeg
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n7.1-latest-win64-lgpl-shared-7.1.zip" -OutFile ffmpeg.zip
+          Expand-Archive ffmpeg.zip -DestinationPath .
+          $dir = (Get-ChildItem -Directory -Filter "ffmpeg-*" | Select-Object -First 1).FullName
+          "FFMPEG_DIR=$dir" | Out-File -FilePath $env:GITHUB_ENV -Append
+      - name: Build
+        run: cargo build --release --locked --features bundled-sdl
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force out/henge-remote | Out-Null
+          Copy-Item target/release/henge-remote.exe out/henge-remote/
+          Copy-Item "$env:FFMPEG_DIR/bin/avcodec-*.dll","$env:FFMPEG_DIR/bin/avutil-*.dll","$env:FFMPEG_DIR/bin/swresample-*.dll" out/henge-remote/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: henge-remote-windows-${{ github.sha }}
+          path: remote/out

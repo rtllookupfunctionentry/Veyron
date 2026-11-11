@@ -222,9 +222,13 @@ struct SessionView: View {
             if on { RemoteDesktop.shared.start() } else { RemoteDesktop.shared.stop() }
         }
         .onChange(of: remoteHeadless) { _ in RemoteDesktop.shared.applyHeadless() }
+        .onChange(of: remoteWifi) { _ in // being announced on the network starts and stops with the listener
+            if remoteEnabled { RemoteDesktop.shared.stop(); RemoteDesktop.shared.start() }
+        }
         .onAppear {
             UIApplication.shared.isIdleTimerDisabled = true
             HardwareMouse.shared.start()
+            RemoteDesktop.shared.setMac(name: mac.name)
             if remoteEnabled { RemoteDesktop.shared.start() }
             VolumeClicks.shared.start()
         }
@@ -552,7 +556,7 @@ struct SessionView: View {
                             LabeledContent("Code", value: remote.code)
                         }
                     }
-                    Text("Run tools/henge-remote.py on the computer. Over USB, start iproxy 15901:5901 there first and connect to 127.0.0.1:15901. Over Wi-Fi, give it the address and --code. Keep Henge open: iOS pauses it in the background.")
+                    Text("Open Henge Remote on the computer. It finds this phone by itself on a cable, and on the same Wi-Fi once that is allowed here, where it asks for the code. Keep Henge open: iOS pauses it in the background.")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 Section("Sharing") {

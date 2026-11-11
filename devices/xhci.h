@@ -9,12 +9,13 @@
    INTx) with two USB HID devices: a boot keyboard on port 1 and a Magic
    Trackpad 2 on port 2: what Virtualization.framework gives a macOS guest as
    its "Virtual USB Keyboard", plus Apple's multitouch pad, so the guest's
-   own gesture engine sees a real trackpad. Changes come from the host UI on
-   any thread (hv_xhci_key, hv_xhci_touch); the CPU thread delivers them
-   (hv_xhci_poll). */
+   own gesture engine sees a real trackpad. Port 3 is empty until a game
+   controller is in use (hv_xhci_gamepad), and then holds a DualShock 4.
+   Changes come from the host UI on any thread (hv_xhci_key, hv_xhci_touch,
+   hv_xhci_gamepad); the CPU thread delivers them (hv_xhci_poll). */
 #define HV_XHCI_SLOTS 8
-#define HV_XHCI_PORTS 2
-#define HV_XHCI_DEVICES 2
+#define HV_XHCI_PORTS 3
+#define HV_XHCI_DEVICES 3
 #define HV_XHCI_INTRS 4
 #define HV_XHCI_EPS 32 /* device context index 1..31 */
 #define HV_XHCI_REPORTS 256
@@ -26,6 +27,9 @@
 #define HV_TP_FINGERS 10
 #define HV_TP_REPORTS 64
 #define HV_TP_REPORT_LEN (12 + 9 * HV_TP_FINGERS) /* report ID 2: 12-byte prefix, N x 9-byte fingers */
+
+#define HV_PAD_REPORTS 64
+#define HV_PAD_REPORT_LEN 64 /* the DualShock 4's input report over USB, report ID 1 */
 
 typedef struct HvXhciRing {
     uint64_t dequeue; /* guest PA of the next TRB */
@@ -52,7 +56,7 @@ typedef struct HvXhci {
     /* device slots: -1 until the device on the slot's port is addressed */
     int slot_used[HV_XHCI_SLOTS + 1];
     struct HvXhciSlot {
-        int dev;         /* 0 keyboard, 1 trackpad, -1 none */
+        int dev;         /* 0 keyboard, 1 trackpad, 2 controller, -1 none */
         int configured;
         HvXhciRing ep[HV_XHCI_EPS];
         int ep_running[HV_XHCI_EPS];
@@ -83,6 +87,15 @@ typedef struct HvXhci {
     uint32_t tp_multi_logs; /* multi-finger deliveries logged, capped */
     uint8_t tp_f1[8];   /* feature report 1: the header for the selected sensor register */
     int tp_f1_len;
+    /* DualShock 4: whether it should be on the bus, its current input report and
+       the reports waiting for an IN transfer. */
+    int pad_on;
+    uint8_t pad_state[HV_PAD_REPORT_LEN];
+    uint8_t pad_reports[HV_PAD_REPORTS][HV_PAD_REPORT_LEN];
+    uint32_t pad_rhead, pad_rtail;
+    uint8_t pad_seq;    /* the report's 6-bit counter */
+    uint64_t pad_delivered;
+    uint32_t pad_reqs;  /* control requests logged, capped */
 } HvXhci;
 
 HvXhci *hv_xhci_create(HvMachine *m, HvPcie *bus);
@@ -102,6 +115,15 @@ void hv_xhci_touch(HvXhci *x, int id, int phase, int px, int py, uint32_t ts_ms)
 void hv_xhci_touch_frame(HvXhci *x, uint32_t ts_ms);
 /* Any thread: the pad's full press (a click), down or up. */
 void hv_xhci_touch_button(HvXhci *x, int down);
+/* Any thread: the state of the game controller, a DualShock 4 that the first call
+   plugs into port 3. buttons, by bit (SDL's gamepad button order): 0 south (cross),
+   1 east (circle), 2 west (square), 3 north (triangle), 4 back (share), 5 guide
+   (PS), 6 start (options), 7 left stick, 8 right stick, 9 left shoulder, 10 right
+   shoulder, 11-14 d-pad up, down, left, right. axes: 0-3 left x, left y, right x,
+   right y (-32768..32767, y grows downwards), 4-5 left and right trigger
+   (0..32767). Only a change makes a report. NULL axes: the controller is gone,
+   unplug it. */
+void hv_xhci_gamepad(HvXhci *x, uint32_t buttons, const int16_t axes[6]);
 /* CPU thread: hand waiting reports to the guest. */
 void hv_xhci_poll(HvXhci *x);
 

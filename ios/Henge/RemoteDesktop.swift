@@ -4,13 +4,28 @@ import VideoToolbox
 import CoreMedia
 import CoreVideo
 import QuartzCore
+import UIKit
 
-/// Remote desktop: the Mac's screen through the phone's hardware H.264 encoder to one client on port 5901,
-/// as a raw Annex-B stream, and the client's mouse and keyboard back as 6-byte messages:
+/// Remote desktop: the Mac's screen through the phone's hardware encoder to one client on port 5901, and the
+/// client's mouse and keyboard back as 6-byte messages:
 /// [type][a][x: Int16 LE][y: Int16 LE], type 1 move (x, y), 2 button (a, x = down), 3 scroll (x, y), 4 key (a = HID usage, x = down),
 /// 5 the computer's name (a = its length in bytes, which follow the message; shown instead of its address).
-/// The client is tools/henge-remote.py; over USB, `iproxy 15901:5901` on the computer. `ffplay tcp://…` shows the picture alone.
+/// The client is Henge Remote (remote/ in this repository), which reaches a phone on a cable through usbmuxd.
 /// Only USB clients by default. With Wi-Fi allowed, a network client must first send the 6-digit code shown on the phone.
+///
+/// Protocol 1 is the above with the picture as a raw H.264 Annex-B stream (`ffplay tcp://…` shows it; tools/henge-remote.py
+/// speaks it). A client that sends type 16 (a = 2) within 0.3 s of connecting gets protocol 2 instead: everything from the
+/// phone comes as [type][flags][0][0][length: UInt32 LE] and a body:
+///   1 a picture: flags bit 0 keyframe, bit 1 HEVC; body = this phone's clock in microseconds (Int64 LE), then Annex-B
+///   2 what is being shared, as JSON: name, running, width, height, and what this build can do
+///   3 the answer to a ping: the ping's four bytes, then this phone's clock in microseconds
+///   4 text the Mac copied
+/// and the client may also send:
+///   6 send a keyframe          7 a stream setting: a = 1 bitrate (x, tenths of Mbit/s), 2 frames a second (x),
+///   8 ping (x, y: any 4 bytes)     3 format (x: 0 H.264, 1 HEVC), 4 longer side in pixels (x, 0 = the Mac's own)
+///   9 a controller's state and 10 text copied on the computer, as [type][a][length: UInt32 LE] and a body.
+/// Port 5904 answers one line of JSON (name, running) and hangs up, so a computer can list this phone without taking the
+/// stream; with Wi-Fi allowed the phone also announces itself on the network as `_henge._tcp`.
 final class RemoteDesktop: ObservableObject {
     static let shared = RemoteDesktop()
     static let enabledKey = "henge.remote.enabled"
@@ -21,6 +36,7 @@ final class RemoteDesktop: ObservableObject {
     /// The Mac's sound, for the same client: packets of [length: UInt32][rate: UInt32][channels: UInt16][format: UInt16]
     /// (5 s16, 17 s32, 19 float), little-endian, then that many bytes of interleaved PCM.
     static let audioPort: UInt16 = 5903
+    static let statusPort: UInt16 = 5904
 
     @Published private(set) var connected = false
     @Published private(set) var client = ""
@@ -44,6 +60,17 @@ final class RemoteDesktop: ObservableObject {
     private var unsent = 0
     private var codeBytes: [UInt8] = []
     private var lockedUntil = 0.0
+    private var statusListener: NWListener?
+    private var macName = ""
+    // queue only: protocol 2
+    private var framed = false       // the client said hello: everything goes out as messages
+    private var formDecided = false  // the hello came, or the wait for it ran out
+    private var formDeadline = 0.0
+    private var bitrate = 15_000_000
+    private var fps = 60
+    private var hevc = false
+    private var maxSide = 0          // the encoded picture's longer side; 0 for the Mac's own, up to 2560
+    private var encodingHEVC = false // what `session` was made for
     // audioQueue only: sound has a queue of its own, as `queue` waits on the GPU and would make it stutter
     private let audioQueue = DispatchQueue(label: "henge.remote.audio", qos: .userInteractive)
     private var audioListener: NWListener?
@@ -57,8 +84,15 @@ final class RemoteDesktop: ObservableObject {
     private var inbox: [UInt8] = []
     private var heldKeys = Set<UInt8>()
     private var heldButtons = Set<Int32>()
+    private var padUsed = false
+
+    /// The name of the Mac being shown, for a computer's list of what it can connect to.
+    func setMac(name: String) {
+        queue.async { self.macName = name }
+    }
 
     func start() {
+        let deviceName = UIDevice.current.name
         queue.async { [self] in
             guard listener == nil else { return }
             let code = String(format: "%06d", Int.random(in: 0..<1_000_000))
@@ -68,8 +102,15 @@ final class RemoteDesktop: ObservableObject {
                 let l = try NWListener(using: .tcp, on: NWEndpoint.Port(rawValue: Self.port)!)
                 l.newConnectionHandler = { [weak self] c in self?.accept(c) }
                 l.stateUpdateHandler = { state in HengeLog.log("remote", "listener: \(state)") }
+                if UserDefaults.standard.bool(forKey: Self.wifiKey) { // computers on the network find it by this
+                    l.service = NWListener.Service(name: deviceName, type: "_henge._tcp", txtRecord: NWTXTRecord(["name": deviceName]))
+                }
                 l.start(queue: queue)
                 listener = l
+                let status = try NWListener(using: .tcp, on: NWEndpoint.Port(rawValue: Self.statusPort)!)
+                status.newConnectionHandler = { [weak self] c in self?.answerStatus(c) }
+                status.start(queue: queue)
+                statusListener = status
             } catch {
                 HengeLog.log("remote", "can't listen on \(Self.port): \(error)")
             }
@@ -82,6 +123,8 @@ final class RemoteDesktop: ObservableObject {
         queue.async { [self] in
             listener?.cancel()
             listener = nil
+            statusListener?.cancel()
+            statusListener = nil
             drop()
         }
         audioQueue.async { [self] in
@@ -275,11 +318,95 @@ final class RemoteDesktop: ObservableObject {
         if UserDefaults.standard.bool(forKey: Self.headlessKey) { henge_vm_set_headless(1) }
         let name = "\(c.endpoint)"
         DispatchQueue.main.async { self.connected = true; self.client = name }
+        // Each client starts from the same settings and says what it wants changed.
+        (framed, formDecided, formDeadline) = (false, false, CACurrentMediaTime() + 0.3)
+        (bitrate, fps, hevc, maxSide) = (15_000_000, 60, false, 0)
+        startTimer()
+    }
+
+    private func startTimer() {
+        timer?.cancel()
         let t = DispatchSource.makeTimerSource(queue: queue)
-        t.schedule(deadline: .now(), repeating: .nanoseconds(16_666_667), leeway: .milliseconds(2))
+        t.schedule(deadline: .now(), repeating: .nanoseconds(1_000_000_000 / fps), leeway: .milliseconds(1))
         t.setEventHandler { [weak self] in self?.tick() }
         t.resume()
         timer = t
+    }
+
+    // MARK: - Protocol 2 (queue)
+
+    private func hello() {
+        guard connection != nil, !formDecided else { return } // too late: the raw stream has begun
+        (framed, formDecided) = (true, true)
+        var w: Int32 = 0, h: Int32 = 0
+        let running = henge_vm_stream_frame(nil, &w, &h) >= 0
+        let info: [String: Any] = ["name": macName, "running": running, "width": Int(w), "height": Int(h),
+                                   "hevc": true, "controller": true, "clipboard": true]
+        if let body = try? JSONSerialization.data(withJSONObject: info) { message(2, body) }
+    }
+
+    private func message(_ kind: UInt8, flags: UInt8 = 0, _ body: Data) {
+        guard framed, let c = connection else { return }
+        var out = Data(capacity: 8 + body.count)
+        out.append(contentsOf: [kind, flags, 0, 0])
+        withUnsafeBytes(of: UInt32(body.count).littleEndian) { out.append(contentsOf: $0) }
+        out.append(body)
+        let size = out.count
+        unsent += size
+        c.send(content: out, completion: .contentProcessed { [weak self] _ in
+            guard let self else { return }
+            self.queue.async { if c === self.connection { self.unsent = max(0, self.unsent - size) } }
+        })
+    }
+
+    private func pong(_ echo: [UInt8]) {
+        var body = Data(echo)
+        withUnsafeBytes(of: Int64(CACurrentMediaTime() * 1_000_000).littleEndian) { body.append(contentsOf: $0) }
+        message(3, body)
+    }
+
+    private func tune(_ which: UInt8, _ value: Int) {
+        switch which {
+        case 1: // tenths of a megabit a second
+            bitrate = min(max(value, 10), 1000) * 100_000
+            if let s = session { VTSessionSetProperty(s, key: kVTCompressionPropertyKey_AverageBitRate, value: bitrate as CFNumber) }
+        case 2:
+            let wanted = min(max(value, 15), 120)
+            guard wanted != fps else { return }
+            fps = wanted
+            if let s = session { VTSessionSetProperty(s, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: fps as CFNumber) }
+            if timer != nil { startTimer() }
+        case 3:
+            guard (value != 0) != hevc else { return }
+            hevc = value != 0
+            screen = (0, 0) // a new encoder with the next picture
+        case 4:
+            let side = value == 0 ? 0 : min(max(value, 640), 3840)
+            guard side != maxSide else { return }
+            maxSide = side
+            screen = (0, 0)
+        default:
+            break
+        }
+        HengeLog.log("remote", "stream: \(bitrate / 1000) kbit/s, \(fps) fps, \(hevc ? "HEVC" : "H.264"), longer side \(maxSide == 0 ? "as the Mac's" : "\(maxSide)")")
+    }
+
+    /// The Mac's clipboard changed: a protocol 2 client keeps its own in step.
+    func macCopied(_ text: String) {
+        queue.async { self.message(4, Data(text.utf8)) }
+    }
+
+    /// Port 5904: whether a Mac is running here and what it is called, then goodbye.
+    private func answerStatus(_ c: NWConnection) {
+        guard Self.isLoopback(c.endpoint) || UserDefaults.standard.bool(forKey: Self.wifiKey) else {
+            c.cancel()
+            return
+        }
+        var w: Int32 = 0, h: Int32 = 0
+        let info: [String: Any] = ["name": macName, "running": henge_vm_stream_frame(nil, &w, &h) >= 0]
+        c.start(queue: queue)
+        c.send(content: try? JSONSerialization.data(withJSONObject: info), contentContext: .finalMessage, isComplete: true,
+               completion: .contentProcessed { _ in c.cancel() })
     }
 
     private func drop() {
@@ -295,6 +422,8 @@ final class RemoteDesktop: ObservableObject {
         guard had else { return }
         henge_vm_set_headless(0)
         inputQueue.async { [self] in
+            if padUsed { henge_vm_gamepad(0, nil) } // the controller goes with the computer it was on
+            padUsed = false
             for k in heldKeys { henge_vm_key_hid(k, 0) }
             for b in heldButtons { henge_vm_mouse_button(b, 0) }
             heldKeys.removeAll()
@@ -308,6 +437,10 @@ final class RemoteDesktop: ObservableObject {
 
     private func tick() {
         guard connection != nil, unsent < 1_000_000 else { return } // the client is behind: skip, don't queue
+        if !formDecided { // a moment for the client's hello, which decides what the first byte sent is
+            guard CACurrentMediaTime() >= formDeadline else { return }
+            formDecided = true
+        }
         var w: Int32 = 0, h: Int32 = 0
         let seq = henge_vm_stream_frame(nil, &w, &h)
         guard seq >= 0, w > 0, h > 0 else { hadScreen = false; return }
@@ -341,17 +474,18 @@ final class RemoteDesktop: ObservableObject {
         pool = nil
         screen = (w, h)
         // The hardware encoder tops out around 4K; past 2560 on the long side the stream only gets slower.
-        let scale = min(1, 2560 / Double(max(w, h)))
+        let scale = min(1, Double(maxSide == 0 ? 2560 : min(maxSide, 2560)) / Double(max(w, h)))
+        let codec = hevc ? kCMVideoCodecType_HEVC : kCMVideoCodecType_H264
         let ew = Int32(Double(w) * scale) & ~1, eh = Int32(Double(h) * scale) & ~1
         let attrs = [kCVPixelBufferPixelFormatTypeKey: kCVPixelFormatType_32BGRA,
                      kCVPixelBufferMetalCompatibilityKey: true,
                      kCVPixelBufferIOSurfacePropertiesKey: [String: Any]()] as CFDictionary
         var s: VTCompressionSession?
         let lowLatency = [kVTVideoEncoderSpecification_EnableLowLatencyRateControl: true] as CFDictionary
-        var err = VTCompressionSessionCreate(allocator: nil, width: ew, height: eh, codecType: kCMVideoCodecType_H264, encoderSpecification: lowLatency,
+        var err = VTCompressionSessionCreate(allocator: nil, width: ew, height: eh, codecType: codec, encoderSpecification: lowLatency,
                                              imageBufferAttributes: attrs, compressedDataAllocator: nil, outputCallback: nil, refcon: nil, compressionSessionOut: &s)
         if err != noErr {
-            err = VTCompressionSessionCreate(allocator: nil, width: ew, height: eh, codecType: kCMVideoCodecType_H264, encoderSpecification: nil,
+            err = VTCompressionSessionCreate(allocator: nil, width: ew, height: eh, codecType: codec, encoderSpecification: nil,
                                              imageBufferAttributes: attrs, compressedDataAllocator: nil, outputCallback: nil, refcon: nil, compressionSessionOut: &s)
         }
         guard err == noErr, let s else {
@@ -359,16 +493,17 @@ final class RemoteDesktop: ObservableObject {
             return
         }
         VTSessionSetProperty(s, key: kVTCompressionPropertyKey_RealTime, value: kCFBooleanTrue)
-        VTSessionSetProperty(s, key: kVTCompressionPropertyKey_ProfileLevel, value: kVTProfileLevel_H264_High_AutoLevel)
+        VTSessionSetProperty(s, key: kVTCompressionPropertyKey_ProfileLevel, value: hevc ? kVTProfileLevel_HEVC_Main_AutoLevel : kVTProfileLevel_H264_High_AutoLevel)
         VTSessionSetProperty(s, key: kVTCompressionPropertyKey_AllowFrameReordering, value: kCFBooleanFalse)
-        VTSessionSetProperty(s, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: 120 as CFNumber)
-        VTSessionSetProperty(s, key: kVTCompressionPropertyKey_AverageBitRate, value: 15_000_000 as CFNumber)
-        VTSessionSetProperty(s, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: 60 as CFNumber)
+        VTSessionSetProperty(s, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: 240 as CFNumber)
+        VTSessionSetProperty(s, key: kVTCompressionPropertyKey_AverageBitRate, value: bitrate as CFNumber)
+        VTSessionSetProperty(s, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: fps as CFNumber)
         VTCompressionSessionPrepareToEncodeFrames(s)
         session = s
         pool = VTCompressionSessionGetPixelBufferPool(s)
+        encodingHEVC = hevc
         forceKey = true
-        HengeLog.log("remote", "encoding \(w)x\(h) as \(ew)x\(eh)")
+        HengeLog.log("remote", "encoding \(w)x\(h) as \(ew)x\(eh) \(hevc ? "HEVC" : "H.264")")
     }
 
     /// One encoded frame as Annex-B: parameter sets before each keyframe, start codes for the length prefixes.
@@ -379,14 +514,22 @@ final class RemoteDesktop: ObservableObject {
         let attachments = CMSampleBufferGetSampleAttachmentsArray(sample, createIfNecessary: false) as? [[CFString: Any]]
         let keyframe = !((attachments?.first?[kCMSampleAttachmentKey_NotSync] as? Bool) ?? false)
         if keyframe, let format = CMSampleBufferGetFormatDescription(sample) {
+            // The two formats keep their parameter sets behind differently named calls of the same shape.
+            let hevcStream = CMFormatDescriptionGetMediaSubType(format) == kCMVideoCodecType_HEVC
+            func parameterSet(_ i: Int, _ p: UnsafeMutablePointer<UnsafePointer<UInt8>?>?, _ n: UnsafeMutablePointer<Int>?, _ count: UnsafeMutablePointer<Int>?) -> OSStatus {
+                if hevcStream {
+                    return CMVideoFormatDescriptionGetHEVCParameterSetAtIndex(format, parameterSetIndex: i, parameterSetPointerOut: p, parameterSetSizeOut: n,
+                                                                              parameterSetCountOut: count, nalUnitHeaderLengthOut: nil)
+                }
+                return CMVideoFormatDescriptionGetH264ParameterSetAtIndex(format, parameterSetIndex: i, parameterSetPointerOut: p, parameterSetSizeOut: n,
+                                                                          parameterSetCountOut: count, nalUnitHeaderLengthOut: nil)
+            }
             var count = 0
-            CMVideoFormatDescriptionGetH264ParameterSetAtIndex(format, parameterSetIndex: 0, parameterSetPointerOut: nil, parameterSetSizeOut: nil,
-                                                               parameterSetCountOut: &count, nalUnitHeaderLengthOut: nil)
+            _ = parameterSet(0, nil, nil, &count)
             for i in 0..<count {
                 var p: UnsafePointer<UInt8>?
                 var n = 0
-                if CMVideoFormatDescriptionGetH264ParameterSetAtIndex(format, parameterSetIndex: i, parameterSetPointerOut: &p, parameterSetSizeOut: &n,
-                                                                      parameterSetCountOut: nil, nalUnitHeaderLengthOut: nil) == noErr, let p {
+                if parameterSet(i, &p, &n, nil) == noErr, let p {
                     out.append(contentsOf: startCode)
                     out.append(p, count: n)
                 }
@@ -402,6 +545,14 @@ final class RemoteDesktop: ObservableObject {
             out.append(contentsOf: startCode)
             out.append(contentsOf: bytes[i..<(i + n)])
             i += n
+        }
+        if framed {
+            var body = Data(capacity: 8 + out.count)
+            let taken = Int64(CMSampleBufferGetPresentationTimeStamp(sample).seconds * 1_000_000)
+            withUnsafeBytes(of: taken.littleEndian) { body.append(contentsOf: $0) }
+            body.append(out)
+            message(1, flags: (keyframe ? 1 : 0) | (encodingHEVC ? 2 : 0), body)
+            return
         }
         let size = out.count
         unsent += size
@@ -438,6 +589,26 @@ final class RemoteDesktop: ObservableObject {
                 if !name.isEmpty { DispatchQueue.main.async { self.client = name } }
                 continue
             }
+            if type == 9 || type == 10 { // protocol 2, with a body: [type][a][length: UInt32 LE]
+                let n = Int(inbox[at + 2]) | Int(inbox[at + 3]) << 8 | Int(inbox[at + 4]) << 16 | Int(inbox[at + 5]) << 24
+                guard n <= 1 << 20 else { // nothing real is that long: the stream is out of step, so end it
+                    inbox.removeAll()
+                    queue.async { self.drop() }
+                    return
+                }
+                guard at + 6 + n <= inbox.count else { break }
+                let body = Array(inbox[(at + 6)..<(at + 6 + n)])
+                at += 6 + n
+                if type == 10 {
+                    henge_share_set_clipboard(String(decoding: body, as: UTF8.self))
+                } else if n >= 16 { // buttons as bits (UInt32), then six axes (Int16), little-endian
+                    let buttons = UInt32(body[0]) | UInt32(body[1]) << 8 | UInt32(body[2]) << 16 | UInt32(body[3]) << 24
+                    let axes = (0..<6).map { Int16(bitPattern: UInt16(body[4 + $0 * 2]) | UInt16(body[5 + $0 * 2]) << 8) }
+                    henge_vm_gamepad(buttons, axes)
+                    padUsed = true
+                }
+                continue
+            }
             let x = Int32(Int16(bitPattern: UInt16(inbox[at + 2]) | UInt16(inbox[at + 3]) << 8))
             let y = Int32(Int16(bitPattern: UInt16(inbox[at + 4]) | UInt16(inbox[at + 5]) << 8))
             at += 6
@@ -453,6 +624,15 @@ final class RemoteDesktop: ObservableObject {
             case 4:
                 henge_vm_key_hid(a, x != 0 ? 1 : 0)
                 if x != 0 { heldKeys.insert(a) } else { heldKeys.remove(a) }
+            case 6:
+                queue.async { self.forceKey = true }
+            case 7:
+                queue.async { self.tune(a, Int(x)) }
+            case 8:
+                let echo = Array(inbox[(at - 4)..<at])
+                queue.async { self.pong(echo) }
+            case 16:
+                queue.async { self.hello() }
             default:
                 break
             }

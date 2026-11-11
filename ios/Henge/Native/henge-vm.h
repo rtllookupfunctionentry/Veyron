@@ -78,6 +78,12 @@ void henge_vm_mouse_scroll(int dx, int dy);
 void henge_vm_touch(int finger, int phase, int x, int y, uint32_t ts_ms);
 void henge_vm_touch_frame(uint32_t ts_ms); /* commit one frame with every finger that moved */
 void henge_vm_touch_button(int down); /* the pad's full press (a click) */
+/* The game controller the Mac sees on its USB bus (a DualShock 4, plugged in by the first call):
+   its whole state. buttons, by bit: 0 south, 1 east, 2 west, 3 north, 4 back, 5 guide, 6 start,
+   7 left stick, 8 right stick, 9 left shoulder, 10 right shoulder, 11-14 d-pad up, down, left,
+   right. axes: six values, left x, left y, right x, right y (-32768..32767, y grows downwards),
+   left trigger, right trigger (0..32767). NULL axes: the controller is gone, unplug it. */
+void henge_vm_gamepad(uint32_t buttons, const int16_t *axes);
 /* Where the guest has its pointer, in display pixels. 0, or -1 before it has one. */
 int henge_vm_pointer(int *x, int *y);
 /* A small picture of the display, BGRA, width * height * 4 bytes. 0, or -1 before anything shows. */
