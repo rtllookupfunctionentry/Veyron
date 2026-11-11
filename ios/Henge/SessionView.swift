@@ -222,9 +222,7 @@ struct SessionView: View {
             if on { RemoteDesktop.shared.start() } else { RemoteDesktop.shared.stop() }
         }
         .onChange(of: remoteHeadless) { _ in RemoteDesktop.shared.applyHeadless() }
-        .onChange(of: remoteWifi) { _ in // being announced on the network starts and stops with the listener
-            if remoteEnabled { RemoteDesktop.shared.stop(); RemoteDesktop.shared.start() }
-        }
+        .onChange(of: remoteWifi) { _ in RemoteDesktop.shared.announce() }
         .onAppear {
             UIApplication.shared.isIdleTimerDisabled = true
             HardwareMouse.shared.start()
