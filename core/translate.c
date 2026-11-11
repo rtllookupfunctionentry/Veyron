@@ -1550,6 +1550,15 @@ static int translate_sysreg_inline(Emit *e, uint32_t insn, uint64_t pc) {
         if (!read || !el1) return 0;
         put_const_to(e, rt, 4);
         return 1;
+    case SR(3, 0, 13, 0, 1): /* CONTEXTIDR_EL1: a number xnu writes at every thread switch (82 thousand a second in a game); nothing here reads it */
+        if (!el1) return 0;
+        if (read) put_load_field(e, rt, offsetof(HvCpu, contextidr_el1));
+        else put_store_field(e, rt, offsetof(HvCpu, contextidr_el1));
+        return 1;
+    case SR(3, 0, 4, 2, 4): /* UAO: one bit of PSTATE that nothing here depends on, read and written at every thread switch too */
+        if (!el1) return 0;
+        put_pstate_bit(e, rt, 23, read);
+        return 1;
     case SR(3, 3, 4, 2, 5): /* DIT: one bit of PSTATE, nothing depends on it here */
     case SR(3, 3, 4, 2, 6): /* SSBS */
         put_pstate_bit(e, rt, reg == SR(3, 3, 4, 2, 5) ? 24 : 12, read);

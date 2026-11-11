@@ -119,6 +119,10 @@ int main(void) {
         check("sysregs", "VBAR", c.x[18], c.vbar_el1);
         check("sysregs", "CNTV_CVAL", c.x[21], 0x123);
         check("sysregs", "CNTV_CTL ISTATUS", c.x[23], 5);
+        check("sysregs", "CONTEXTIDR_EL1 read back", c.x[27], 0x4321);
+        check("sysregs", "CONTEXTIDR_EL1 kept", c.contextidr_el1, 0x4321);
+        check("sysregs", "UAO set", c.x[26], 1u << 23);
+        check("sysregs", "UAO cleared", c.x[0], 0);
     }
     mach_timebase_info_data_t tb;
     mach_timebase_info(&tb);

@@ -164,6 +164,14 @@ PROGRAM p_sysregs
     mov x22, #1
     msr cntv_ctl_el0, x22
     mrs x23, cntv_ctl_el0      // enabled and already expired: ISTATUS set
+    mov x26, #0x4321
+    msr contextidr_el1, x26
+    mrs x27, contextidr_el1
+    mov x0, #(1 << 23)
+    msr S3_0_C4_C2_4, x0       // UAO
+    mrs x26, S3_0_C4_C2_4
+    msr S3_0_C4_C2_4, xzr
+    mrs x0, S3_0_C4_C2_4
 END p_sysregs
 
 // The test raises the IRQ line before running; it is masked until DAIFClr.

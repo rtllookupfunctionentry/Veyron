@@ -230,6 +230,7 @@ typedef struct HvCpu {
 #define HV_CPU_TLB_EL      32 /* between a slot's tables */
 
 _Static_assert(offsetof(HvCpu, sp) == HV_CPU_SP, "HvCpu layout");
+_Static_assert(offsetof(HvCpu, contextidr_el1) % 8 == 0 && offsetof(HvCpu, contextidr_el1) < 32768, "read and written by translated code, as a load or store with an offset");
 _Static_assert(offsetof(HvCpu, pc) == HV_CPU_PC, "HvCpu layout");
 _Static_assert(offsetof(HvCpu, nzcv) == HV_CPU_NZCV, "HvCpu layout");
 _Static_assert(offsetof(HvCpu, exit_routine) == HV_CPU_EXIT, "HvCpu layout");
