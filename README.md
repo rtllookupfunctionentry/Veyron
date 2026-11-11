@@ -79,7 +79,7 @@ The desktop app, in [`remote/`](remote). It shows the Mac in a window and sends 
 
 - **Linux:** unpack and run `install.sh`. The package is built on Ubuntu 24.04 and uses the system's FFmpeg 6 (`libavcodec.so.60`) and glibc 2.38 or later; on a system with another FFmpeg, build from source with `remote/install.sh`, which needs Rust, SDL3 and FFmpeg with their development files. Phones on a cable need `usbmuxd` running. A tray icon needs `libayatana-appindicator`.
 - **Windows:** unpack and run `veyron-remote.exe`; FFmpeg's libraries come with it. Phones on a cable need Apple's device support, which comes with iTunes or the Apple Devices app.
-- **macOS:** `brew install ffmpeg sdl3` first.
+- **macOS:** `brew install ffmpeg sdl3` first; the package uses Homebrew's FFmpeg 8 and SDL3. It is not notarised: after unpacking, run `xattr -d com.apple.quarantine veyron-remote/veyron-remote`.
 
 **Use it.**
 
