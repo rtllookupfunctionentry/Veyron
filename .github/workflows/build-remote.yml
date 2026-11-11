@@ -63,6 +63,21 @@ jobs:
           name: veyron-remote-macos-${{ github.sha }}
           path: remote/target/release/veyron-remote
 
+  macos-intel:
+    runs-on: macos-15-intel   # an Intel Mac: Homebrew is under /usr/local there
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependencies
+        run: brew install ffmpeg sdl3 pkg-config
+      - name: Build
+        env:
+          RUSTFLAGS: -L /usr/local/lib
+        run: cargo build --release --locked
+      - uses: actions/upload-artifact@v4
+        with:
+          name: veyron-remote-macos-intel-${{ github.sha }}
+          path: remote/target/release/veyron-remote
+
   windows:
     runs-on: windows-latest
     steps:
