@@ -123,6 +123,43 @@ unsafe fn pad_state(pad: *mut SDL_Gamepad) -> [u8; 16] {
     }
 }
 
+/// A menu entry of the tray icon was chosen: `userdata` is the event to send the window's loop, type and code.
+unsafe extern "C" fn tray_chosen(userdata: *mut c_void, _entry: *mut SDL_TrayEntry) {
+    unsafe {
+        let mut e: SDL_Event = std::mem::zeroed();
+        e.user.r#type = (userdata as usize >> 8) as u32;
+        e.user.code = (userdata as usize & 0xff) as i32;
+        SDL_PushEvent(&mut e);
+    }
+}
+
+/// An icon by the clock with Open and Quit, for when the app waits without a window. Null where the desktop
+/// has no place for one; the window then simply stays.
+unsafe fn make_tray(wake: u32) -> *mut SDL_Tray {
+    unsafe {
+        // The app's mark, drawn rather than loaded: a lintel on two stones.
+        let icon = SDL_CreateSurface(32, 32, SDL_PIXELFORMAT_RGBA32);
+        if icon.is_null() {
+            return std::ptr::null_mut();
+        }
+        let stone = SDL_MapSurfaceRGBA(icon, 0xf2, 0xa6, 0x5a, 0xff);
+        for (x, y, w, h) in [(4, 6, 24, 5), (7, 13, 6, 14), (19, 13, 6, 14)] {
+            SDL_FillSurfaceRect(icon, &SDL_Rect { x, y, w, h }, stone);
+        }
+        let tray = SDL_CreateTray(icon, c"Henge Remote".as_ptr());
+        SDL_DestroySurface(icon);
+        if tray.is_null() {
+            return tray;
+        }
+        let menu = SDL_CreateTrayMenu(tray);
+        for (label, code) in [(c"Open Henge Remote", 1usize), (c"Quit", 2)] {
+            let entry = SDL_InsertTrayEntryAt(menu, -1, label.as_ptr(), SDL_TRAYENTRY_BUTTON);
+            SDL_SetTrayEntryCallback(entry, Some(tray_chosen), ((wake as usize) << 8 | code) as *mut c_void);
+        }
+        tray
+    }
+}
+
 struct Live {
     session: Arc<Session>,
     target: Target,
@@ -172,6 +209,8 @@ unsafe fn run(background: bool, direct: Option<(String, String)>) {
         };
         let found = Discovery::start(poke);
         let mut cfg = Config::load();
+        // Waiting for a Mac without a window needs somewhere to be reached from.
+        let tray = if background || cfg.auto_connect || cfg.start_at_login { make_tray(wake) } else { std::ptr::null_mut() };
         let mut st = ui::State::default();
         let started = Instant::now();
         let mut live: Option<Live> = None;
@@ -180,7 +219,12 @@ unsafe fn run(background: bool, direct: Option<(String, String)>) {
         let mut tried_auto = Instant::now() - Duration::from_secs(60);
         let mut captured = false;
         let mut fullscreen = false;
-        let mut hidden = background;
+        let mut hidden = background && !tray.is_null();
+        if background && tray.is_null() {
+            // Nowhere to put an icon (on Linux SDL wants libayatana-appindicator for it): wait in the taskbar instead.
+            SDL_ShowWindow(window);
+            SDL_MinimizeWindow(window);
+        }
         let mut focused = true;
         let (mut held_keys, mut held_buttons) = (HashSet::<u8>::new(), HashSet::<u8>::new());
         let (mut move_x, mut move_y, mut wheel_x, mut wheel_y) = (0f32, 0f32, 0f32, 0f32);
@@ -209,7 +253,19 @@ unsafe fn run(background: bool, direct: Option<(String, String)>) {
                 let session = live.as_ref().map(|l| l.session.clone());
                 let kind = SDL_EventType(ev.r#type);
                 match kind {
-                    SDL_EVENT_QUIT | SDL_EVENT_WINDOW_CLOSE_REQUESTED => break 'app,
+                    SDL_EVENT_QUIT => break 'app,
+                    // With the tray icon there, closing the window leaves the app waiting for a Mac.
+                    SDL_EVENT_WINDOW_CLOSE_REQUESTED if tray.is_null() || live.is_some() => break 'app,
+                    SDL_EVENT_WINDOW_CLOSE_REQUESTED => {
+                        hidden = true;
+                        SDL_HideWindow(window);
+                    }
+                    _ if ev.r#type == wake && ev.user.code == 2 => break 'app,
+                    _ if ev.r#type == wake && ev.user.code == 1 => {
+                        (hidden, dirty) = (false, true);
+                        SDL_ShowWindow(window);
+                        SDL_RaiseWindow(window);
+                    }
                     SDL_EVENT_MOUSE_MOTION if captured => {
                         move_x += ev.motion.xrel * cfg.pointer_speed;
                         move_y += ev.motion.yrel * cfg.pointer_speed;
@@ -551,6 +607,9 @@ unsafe fn run(background: bool, direct: Option<(String, String)>) {
         }
         cfg.save();
         painter.destroy();
+        if !tray.is_null() {
+            SDL_DestroyTray(tray);
+        }
         SDL_GL_DestroyContext(context);
         SDL_DestroyWindow(window);
         SDL_Quit();
