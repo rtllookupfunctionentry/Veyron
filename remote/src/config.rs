@@ -3,12 +3,18 @@ use crate::session::Tuning;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-/// A Mac reached by address before, kept with its code so one click connects again.
+/// A Mac reached by address before, kept so one click connects again.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Saved {
     pub host: String,
     pub port: u16,
-    pub code: String,
+}
+
+/// A phone this computer has been paired with over the network: its lasting public key, in hex.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Paired {
+    pub key: String,
+    pub name: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -34,6 +40,7 @@ pub struct Config {
     pub fullscreen_on_connect: bool,
     pub show_stats: bool,
     pub saved: Vec<Saved>,
+    pub paired: Vec<Paired>,
 }
 
 impl Default for Config {
@@ -53,6 +60,7 @@ impl Default for Config {
             fullscreen_on_connect: false,
             show_stats: false,
             saved: Vec::new(),
+            paired: Vec::new(),
         }
     }
 }
@@ -77,10 +85,16 @@ impl Config {
         }
     }
 
-    pub fn remember(&mut self, host: &str, port: u16, code: &str) {
+    pub fn remember(&mut self, host: &str, port: u16) {
         self.saved.retain(|s| !(s.host == host && s.port == port));
-        self.saved.insert(0, Saved { host: host.into(), port, code: code.into() });
+        self.saved.insert(0, Saved { host: host.into(), port });
         self.saved.truncate(8);
+    }
+
+    /// The user has compared the numbers: this phone's key is the one to expect from now on.
+    pub fn pair(&mut self, key: &str, name: &str) {
+        self.paired.retain(|p| p.key != key);
+        self.paired.push(Paired { key: key.into(), name: name.into() });
     }
 }
 

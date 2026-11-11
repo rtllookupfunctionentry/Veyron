@@ -5,9 +5,11 @@ use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpStream};
 use std::time::Duration;
 
-/// One connection, whichever way it was made: a TCP socket, or the usbmuxd socket once it carries a tunnel.
+/// One connection, whichever way it was made: a TCP socket, the usbmuxd socket once it carries a tunnel, or
+/// a TCP socket to a phone on the network, which is sealed.
 pub enum Conn {
     Tcp(TcpStream),
+    Sealed(crate::seal::Sealed),
     #[cfg(unix)]
     Unix(std::os::unix::net::UnixStream),
 }
@@ -16,6 +18,7 @@ impl Conn {
     pub fn try_clone(&self) -> io::Result<Conn> {
         Ok(match self {
             Conn::Tcp(s) => Conn::Tcp(s.try_clone()?),
+            Conn::Sealed(s) => Conn::Sealed(s.clone()),
             #[cfg(unix)]
             Conn::Unix(s) => Conn::Unix(s.try_clone()?),
         })
@@ -23,6 +26,7 @@ impl Conn {
 
     pub fn shutdown(&self) {
         let _ = match self {
+            Conn::Sealed(s) => return s.shutdown(),
             Conn::Tcp(s) => s.shutdown(Shutdown::Both),
             #[cfg(unix)]
             Conn::Unix(s) => s.shutdown(Shutdown::Both),
@@ -31,6 +35,7 @@ impl Conn {
 
     pub fn set_read_timeout(&self, t: Option<Duration>) {
         let _ = match self {
+            Conn::Sealed(s) => return s.set_read_timeout(t),
             Conn::Tcp(s) => s.set_read_timeout(t),
             #[cfg(unix)]
             Conn::Unix(s) => s.set_read_timeout(t),
@@ -42,6 +47,7 @@ impl Read for Conn {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         match self {
             Conn::Tcp(s) => s.read(buf),
+            Conn::Sealed(s) => s.read(buf),
             #[cfg(unix)]
             Conn::Unix(s) => s.read(buf),
         }
@@ -52,6 +58,7 @@ impl Write for Conn {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         match self {
             Conn::Tcp(s) => s.write(buf),
+            Conn::Sealed(s) => s.write(buf),
             #[cfg(unix)]
             Conn::Unix(s) => s.write(buf),
         }

@@ -41,6 +41,8 @@ pub enum Action {
     Disconnect,
     /// Hand the mouse and keyboard to the Mac.
     Capture,
+    /// The number on the phone is the one shown here: pair.
+    Agree,
     Fullscreen,
 }
 
@@ -48,10 +50,6 @@ pub enum Action {
 pub struct State {
     pub settings: bool,
     pub host: String,
-    pub code: String,
-    /// A Mac found on Wi-Fi was chosen and its code is being asked for.
-    pub prompt: Option<Found>,
-    pub prompt_code: String,
     /// What went wrong last, and when (egui's clock) it was put up.
     pub error: Option<(String, f64)>,
     /// When the pointer last moved over the stream: the bar hides a moment after.
@@ -239,11 +237,6 @@ fn field(ui: &mut Ui, text: &mut String, hint: &str, width: f32) -> Response {
     ui.add(egui::TextEdit::singleline(text).hint_text(RichText::new(hint).color(FAINT)).desired_width(width).margin(vec2(10.0, 7.0)).min_size(vec2(0.0, 32.0)).vertical_align(Align::Center))
 }
 
-fn code_only(text: &mut String) {
-    text.retain(|c| c.is_ascii_digit());
-    text.truncate(6);
-}
-
 // ---- the list of Macs ----
 
 pub fn home(ui: &mut Ui, st: &mut State, cfg: &mut Config, found: &[Found], no_usbmuxd: bool, out: &mut Vec<Action>) {
@@ -278,13 +271,7 @@ pub fn home(ui: &mut Ui, st: &mut State, cfg: &mut Config, found: &[Found], no_u
                     None => (way.to_string(), None),
                 };
                 if card(ui, glyph, &f.title, &detail, dot, "Connect").clicked() {
-                    match &f.target {
-                        Target::Net { host, port, .. } => match cfg.saved.iter().find(|s| &s.host == host && s.port == *port) {
-                            Some(s) => out.push(Action::Connect(Target::Net { host: host.clone(), port: *port, code: s.code.clone() }, f.title.clone())),
-                            None => (st.prompt, st.prompt_code) = (Some(f.clone()), String::new()),
-                        },
-                        usb => out.push(Action::Connect(usb.clone(), f.title.clone())),
-                    }
+                    out.push(Action::Connect(f.target.clone(), f.title.clone()));
                 }
             }
             ui.add_space(14.0);
@@ -292,24 +279,22 @@ pub fn home(ui: &mut Ui, st: &mut State, cfg: &mut Config, found: &[Found], no_u
             Frame::new().fill(PANEL).stroke(Stroke::new(1.0, LINE)).corner_radius(14).inner_margin(14).show(ui, |ui| {
                 ui.set_width(ui.available_width()); // as wide as the cards above
                 ui.horizontal(|ui| {
-                    code_only(&mut st.code);
-                    // The address takes what the code and the button leave.
+                    // The address takes what the button leaves.
                     let connect = ui.painter().layout_no_wrap("Connect".to_string(), semi(13.0), Color32::PLACEHOLDER).size().x + 28.0;
-                    let host = field(ui, &mut st.host, "192.168.1.20", ui.available_width() - connect - 70.0 - 2.0 * ui.spacing().item_spacing.x);
-                    let code = field(ui, &mut st.code, "Code", 70.0);
-                    let enter = (host.lost_focus() || code.lost_focus()) && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    let host = field(ui, &mut st.host, "192.168.1.20", ui.available_width() - connect - ui.spacing().item_spacing.x);
+                    let enter = host.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                     if (button(ui, "Connect", true).clicked() || enter) && !st.host.trim().is_empty() {
                         let (host, port) = split_address(st.host.trim());
-                        out.push(Action::Connect(Target::Net { host: host.clone(), port, code: st.code.clone() }, host));
+                        out.push(Action::Connect(Target::Net { host: host.clone(), port }, host));
                     }
                 });
-                ui.label(RichText::new("The address and the six-digit code are in Veyron, under Remote Desktop, once Wi-Fi is allowed there.").size(11.5).color(MUTED));
+                ui.label(RichText::new("The address is in Veyron, under Remote Desktop, once Wi-Fi is allowed there. For a new computer, tap Pair a Computer there first: both then show a number to compare.").size(11.5).color(MUTED));
             });
             let mut forget = None;
             for (i, s) in cfg.saved.iter().enumerate() {
                 let resp = card(ui, icon::CLOCK_COUNTER_CLOCKWISE, &s.host, "Connected before  ·  right-click to forget", None, "Connect");
                 if resp.clicked() {
-                    out.push(Action::Connect(Target::Net { host: s.host.clone(), port: s.port, code: s.code.clone() }, s.host.clone()));
+                    out.push(Action::Connect(Target::Net { host: s.host.clone(), port: s.port }, s.host.clone()));
                 }
                 if resp.secondary_clicked() {
                     forget = Some(i);
@@ -324,7 +309,6 @@ pub fn home(ui: &mut Ui, st: &mut State, cfg: &mut Config, found: &[Found], no_u
     let foot = if no_usbmuxd { "usbmuxd is not running, so phones on a cable cannot be seen." } else { "Looking for iPhones on USB and Wi-Fi" };
     p.text(pos2(full.left() + 24.0, full.bottom() - 22.0), Align2::LEFT_CENTER, foot, body(12.0), FAINT);
     toast(ui.ctx(), st);
-    prompt(ui.ctx(), st, out);
 }
 
 fn split_address(text: &str) -> (String, u16) {
@@ -368,42 +352,6 @@ fn toast(ctx: &Context, st: &mut State) {
     });
 }
 
-/// Asks for the six digits Veyron shows, for a Mac found on Wi-Fi that this PC has not connected to before.
-fn prompt(ctx: &Context, st: &mut State, out: &mut Vec<Action>) {
-    let Some(found) = st.prompt.clone() else { return };
-    let screen = ctx.content_rect();
-    Area::new(Id::new("dim")).order(Order::Middle).fixed_pos(screen.min).show(ctx, |ui| {
-        let (rect, resp) = ui.allocate_exact_size(screen.size(), Sense::click());
-        ui.painter().rect_filled(rect, 0.0, Color32::from_black_alpha(150));
-        if resp.clicked() {
-            st.prompt = None;
-        }
-    });
-    Area::new(Id::new("prompt")).order(Order::Foreground).anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0)).show(ctx, |ui| {
-        Frame::new().fill(PANEL).stroke(Stroke::new(1.0, LINE)).corner_radius(16).inner_margin(22).show(ui, |ui| {
-            ui.set_width(300.0);
-            ui.label(RichText::new(format!("Code for {}", found.title)).font(semi(15.0)));
-            ui.label(RichText::new("Veyron shows six digits under Remote Desktop. They change each time sharing is turned on.").size(12.5).color(MUTED));
-            ui.add_space(4.0);
-            code_only(&mut st.prompt_code);
-            let edit = ui.add(egui::TextEdit::singleline(&mut st.prompt_code).font(semi(22.0)).desired_width(f32::INFINITY).margin(vec2(12.0, 10.0)).horizontal_align(Align::Center));
-            edit.request_focus();
-            ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                let ready = st.prompt_code.len() == 6;
-                let go = ui.add_enabled_ui(ready, |ui| button(ui, "Connect", true)).inner.clicked() || (ready && ui.input(|i| i.key_pressed(egui::Key::Enter)));
-                if go && let Target::Net { host, port, .. } = &found.target {
-                    out.push(Action::Connect(Target::Net { host: host.clone(), port: *port, code: st.prompt_code.clone() }, found.title.clone()));
-                    st.prompt = None;
-                }
-                if button(ui, "Cancel", false).clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                    st.prompt = None;
-                }
-            });
-        });
-    });
-}
-
 // ---- over a running stream ----
 
 pub struct Stream<'a> {
@@ -413,6 +361,9 @@ pub struct Stream<'a> {
     pub retrying: bool,
     pub has_picture: bool,
     pub captured: bool,
+    /// The phone asks to pair: the six digits to compare with its own, and whether the user here has agreed.
+    pub pairing: Option<String>,
+    pub agreed: bool,
     /// The mouse goes to the Mac by position, with no capturing (see `Config::seamless`).
     pub seamless: bool,
     pub fullscreen: bool,
@@ -459,6 +410,29 @@ pub fn stream(ui: &mut Ui, st: &mut State, cfg: &mut Config, s: &Stream, out: &m
         });
     }
 
+    if let (Phase::Pairing, Some(number)) = (s.phase, &s.pairing) {
+        Area::new(Id::new("pairing")).order(Order::Foreground).anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0)).show(&ctx, |ui| {
+            Frame::new().fill(PANEL).stroke(Stroke::new(1.0, LINE)).corner_radius(16).inner_margin(24).show(ui, |ui| {
+                ui.set_width(320.0);
+                ui.label(RichText::new(format!("Pair with {}", s.title)).font(semi(15.0)));
+                ui.add_space(2.0);
+                ui.label(RichText::new(format!("{} {}", &number[..3], &number[3..])).font(semi(36.0)).color(ACCENT_HI));
+                ui.add_space(2.0);
+                let how = if s.agreed { "Now press Pair on the phone." } else { "The phone shows a number too. If it is this one, press Pair there and They match here. If it is another, cancel: something sits between the two." };
+                ui.label(RichText::new(how).size(12.5).color(MUTED));
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if !s.agreed && button(ui, "They match", true).clicked() {
+                        out.push(Action::Agree);
+                    }
+                    if button(ui, "Cancel", false).clicked() {
+                        out.push(Action::Disconnect);
+                    }
+                });
+            });
+        });
+        return;
+    }
     if !live {
         let text = match (s.retrying, s.phase) {
             (true, _) => format!("Reconnecting to {}", s.title),
@@ -643,6 +617,12 @@ pub fn settings(ctx: &Context, st: &mut State, cfg: &mut Config, protocol2: Opti
                 });
                 row(ui, "Start at login", "Waits in the background for a Mac", true, |ui| {
                     toggle(ui, &mut cfg.start_at_login);
+                });
+                let phones = cfg.paired.len();
+                row(ui, "Paired phones", &format!("{phones} paired over the network"), phones > 0, |ui| {
+                    if button(ui, "Forget", false).clicked() {
+                        cfg.paired.clear();
+                    }
                 });
                 row(ui, "Full screen on connecting", "", true, |ui| {
                     toggle(ui, &mut cfg.fullscreen_on_connect);

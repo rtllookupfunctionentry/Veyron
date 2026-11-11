@@ -83,7 +83,7 @@ The desktop app, in [`remote/`](remote). It shows the Mac in a window and sends 
 2. Plug the phone into the computer and open Veyron Remote. The phone appears under Nearby; press Connect.
 3. Move the pointer over the picture and use the Mac. The bar with full screen, statistics, settings and disconnect opens from the small grip at the top edge.
 
-Over Wi-Fi, also turn on **Allow over Wi-Fi with a code** on the phone. The phone then appears under Nearby on the same network, and the app asks once for the six digits the phone shows. A phone can also be reached by typing its address.
+Over Wi-Fi, also turn on **Allow over Wi-Fi** on the phone. The phone then appears under Nearby on the same network, and can also be reached by typing its address. For a new computer, tap **Pair a Computer** on the phone (switching Wi-Fi on does it too) and connect within two minutes: the phone and the computer each show a six-digit number, and if it is the same on both, press Pair on the phone and They match on the computer. After that the computer connects with one click. Paired computers can be forgotten on the phone, and paired phones in the app's settings.
 
 | Key | What it does |
 | --- | --- |

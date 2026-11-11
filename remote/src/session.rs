@@ -5,6 +5,10 @@
 //! the other. Builds with protocol 2 answer the hello below by wrapping everything they send in
 //! [type][flags][0][0][length u32] messages, which adds timestamps, stream settings, the clipboard and the
 //! controller. Which one the phone speaks shows in its first byte: a raw stream starts with a zero.
+//!
+//! To a phone on the network all of it goes sealed (seal.rs), after the phone has let this computer in: at
+//! once if the two are paired, or after the user has compared the number both show and agreed on each.
+use crate::seal;
 use crate::usbmux::{self, Conn};
 use sdl3_sys::everything::*;
 use serde::{Deserialize, Serialize};
@@ -24,7 +28,7 @@ const STATUS: u16 = 3;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Target {
     Usb { udid: String },
-    Net { host: String, port: u16, code: String },
+    Net { host: String, port: u16 },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -32,6 +36,8 @@ pub enum Phase {
     Connecting,
     /// Connected, and the phone has sent nothing yet: no Mac is running there, or it is starting.
     Waiting,
+    /// A phone on the network that this computer is not paired with: both show a number for the user to compare.
+    Pairing,
     Live,
     Ended,
 }
@@ -101,6 +107,8 @@ pub struct Options {
     pub name: String,
     /// The SDL event that wakes the window when a picture or a change of state is ready.
     pub wake: u32,
+    /// The phones this computer is paired with, by their keys in hex.
+    pub known: Vec<String>,
 }
 
 pub struct Session {
@@ -114,9 +122,16 @@ pub struct Session {
     sound: Mutex<Option<Conn>>,
     framed: AtomicBool,
     closed: AtomicBool,
-    /// Over a network, the phone took the connection and hung up before sending anything: the code was not
-    /// the one it shows (they change), or it has just turned a wrong one down, or Wi-Fi is not allowed there.
+    /// Over a network, the phone took the connection and hung up before letting this computer in: Wi-Fi is
+    /// not allowed there, or the pairing was refused, or it is an older Veyron. Trying again by itself is no use.
     rejected: AtomicBool,
+    /// The phone has let this computer in (or is on a cable): the sound may connect.
+    entered: AtomicBool,
+    /// The phones this computer is paired with, by key; and while the phone asks to pair: its key and the
+    /// number to compare, and whether this computer's user has agreed.
+    known: Vec<String>,
+    pairing: Mutex<Option<(String, String)>>,
+    agreed: AtomicBool,
     gain: AtomicU32,
     frames: AtomicU32,
     wake: u32,
@@ -197,19 +212,22 @@ fn dial(target: &Target, offset: u16) -> io::Result<Conn> {
             let dev = dev.ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "the phone is not plugged in"))?;
             usbmux::connect(dev.id, PORT + offset)
         }
-        Target::Net { host, port, code } => {
+        Target::Net { host, port } => {
             let addr = (host.as_str(), port + offset).to_socket_addrs()?.next();
             let addr = addr.ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no such address"))?;
             let s = TcpStream::connect_timeout(&addr, Duration::from_secs(4))?;
             let _ = s.set_nodelay(true);
-            let mut c = Conn::Tcp(s);
-            if !code.is_empty() {
-                // Over Wi-Fi the phone wants the six digits it shows before anything else.
-                c.write_all(&format!("{code:0>6}").as_bytes()[..6])?;
-            }
-            Ok(c)
+            Ok(Conn::Tcp(s))
         }
     }
+}
+
+/// A phone on the network, with the keys agreed: the sealed connection, the phone's key in hex, and the
+/// handshake's hash. The status port is the one thing asked in the clear (the Mac's name, and whether it runs).
+fn dial_sealed(target: &Target, offset: u16) -> io::Result<(Conn, String, Vec<u8>)> {
+    let Conn::Tcp(s) = dial(target, offset)? else { unreachable!("a network target dials TCP") };
+    let link = seal::connect(s, seal::identity()?)?;
+    Ok((Conn::Sealed(link.conn), seal::hex(&link.phone), link.binding))
 }
 
 /// Whether a Mac is running on that phone and what it is called, without taking the stream from anyone.
@@ -228,7 +246,8 @@ fn explain(target: &Target, e: &io::Error) -> String {
         io::ErrorKind::ConnectionRefused if usb => "Veyron isn't sharing a screen. Open the Mac in Veyron and turn on Remote Desktop in its menu.".into(),
         io::ErrorKind::ConnectionRefused => "Nothing answers at that address. Check that Remote Desktop and Wi-Fi are both on in Veyron.".into(),
         io::ErrorKind::NotFound if usb => "The iPhone is no longer plugged in.".into(),
-        io::ErrorKind::UnexpectedEof if !usb => "The phone closed the connection. Check the code against the one Veyron shows.".into(),
+        io::ErrorKind::UnexpectedEof if !usb => "The phone closed the connection.".into(),
+        io::ErrorKind::InvalidData if !usb => format!("The connection was closed: {e}."),
         io::ErrorKind::UnexpectedEof => "Veyron stopped sharing the screen.".into(),
         io::ErrorKind::TimedOut => "The phone did not answer in time.".into(),
         _ => format!("The connection was lost ({e})."),
@@ -249,19 +268,24 @@ impl Session {
             framed: AtomicBool::new(false),
             closed: AtomicBool::new(false),
             rejected: AtomicBool::new(false),
+            entered: AtomicBool::new(false),
+            known: opts.known.clone(),
+            pairing: Mutex::default(),
+            agreed: AtomicBool::new(false),
             gain: AtomicU32::new(1f32.to_bits()),
             frames: AtomicU32::new(0),
             wake: opts.wake,
         });
         if opts.sound {
-            let s = s.clone();
-            std::thread::spawn(move || s.run_sound());
+            let (s, name) = (s.clone(), opts.name.clone());
+            std::thread::spawn(move || s.run_sound(&name));
         }
         let v = s.clone();
         std::thread::spawn(move || {
             let reason = match v.run_video(&opts) {
                 Ok(()) => "Veyron stopped sharing the screen.".to_string(),
-                Err(_) if v.rejected() => "The phone turned the connection down. Enter the code Veyron shows now: it changes each time sharing starts.".to_string(),
+                Err(_) if v.rejected() && v.pairing().is_some() => "The pairing was refused on the phone, or not answered in time.".to_string(),
+                Err(_) if v.rejected() => "The phone turned the connection down. For a computer it has not paired with: in Veyron on the phone, open Details, tap Pair a Computer, and connect again.".to_string(),
                 Err(e) => explain(&v.target, &e),
             };
             *v.phase.lock().unwrap() = (Phase::Ended, reason);
@@ -273,6 +297,21 @@ impl Session {
 
     pub fn rejected(&self) -> bool {
         self.rejected.load(Ordering::Relaxed)
+    }
+
+    /// While the phone asks to pair: the six digits both screens show.
+    pub fn pairing(&self) -> Option<String> {
+        self.pairing.lock().unwrap().as_ref().map(|p| p.1.clone())
+    }
+
+    /// The user says the numbers are the same. Returns the phone's key, to be remembered.
+    pub fn agree(&self) -> Option<String> {
+        self.agreed.store(true, Ordering::Relaxed);
+        self.pairing.lock().unwrap().as_ref().map(|p| p.0.clone())
+    }
+
+    pub fn has_agreed(&self) -> bool {
+        self.agreed.load(Ordering::Relaxed)
     }
 
     pub fn phase(&self) -> (Phase, String) {
@@ -357,8 +396,56 @@ impl Session {
         self.send(7, 4, t.max_side as i32, 0);
     }
 
+    /// The connection for `offset`'s port, past the phone's door: on the network that is the keys, this
+    /// computer's name, and the phone's go; with `may_pair`, a pairing where the two do not know each other.
+    fn enter(&self, offset: u16, name: &str, may_pair: bool) -> io::Result<Conn> {
+        if matches!(self.target, Target::Usb { .. }) {
+            return dial(&self.target, offset);
+        }
+        let (mut conn, phone, binding) = dial_sealed(&self.target, offset)?;
+        // Known from before, or by the pairing this very session has just been through (the sound's turn).
+        let fresh = self.agreed.load(Ordering::Relaxed) && self.pairing.lock().unwrap().as_ref().is_some_and(|p| p.0 == phone);
+        let (knows, pledge) = (fresh || self.known.contains(&phone), seal::random()?);
+        let turned_down = |e: io::Error| {
+            self.rejected.store(may_pair && !self.closed.load(Ordering::Relaxed), Ordering::Relaxed);
+            e
+        };
+        conn.write_all(&seal::greeting(knows, name, &pledge))?;
+        let mut gate = [0u8; 1];
+        conn.read_exact(&mut gate).map_err(turned_down)?;
+        if gate[0] == seal::PAIR && may_pair {
+            // The phone's random value comes with its request; only then is this computer's shown.
+            let mut theirs = [0u8; 32];
+            conn.read_exact(&mut theirs).map_err(turned_down)?;
+            conn.write_all(&pledge)?;
+            *self.pairing.lock().unwrap() = Some((phone, seal::number(&binding, &pledge, &theirs)));
+            self.phase.lock().unwrap().0 = Phase::Pairing;
+            self.wake();
+            *self.writer.lock().unwrap() = Some(conn.try_clone()?); // so that closing the session ends the wait below
+            conn.read_exact(&mut gate).map_err(turned_down)?; // the phone's user agrees, or the phone hangs up (a minute at most)
+            let asked = Instant::now();
+            while !self.agreed.load(Ordering::Relaxed) {
+                // And so must this computer's, within the time a comparison takes: a number left on the
+                // screen is one somebody between the two could go on trying to match.
+                if self.closed.load(Ordering::Relaxed) || asked.elapsed() > Duration::from_secs(90) {
+                    return Err(io::Error::new(io::ErrorKind::TimedOut, "the pairing was not answered here in time"));
+                }
+                std::thread::sleep(Duration::from_millis(30));
+            }
+        }
+        if gate[0] != seal::GO {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "the phone did not let this computer in"));
+        }
+        if !knows && !(may_pair && self.agreed.load(Ordering::Relaxed)) {
+            // Only a phone whose key is known, or has just been checked by the number, is the phone.
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "a phone this computer is not paired with let it in unasked"));
+        }
+        Ok(conn)
+    }
+
     fn run_video(&self, opts: &Options) -> io::Result<()> {
-        let mut conn = dial(&self.target, 0)?;
+        let mut conn = self.enter(0, &opts.name, true)?;
+        self.entered.store(true, Ordering::Relaxed);
         *self.writer.lock().unwrap() = Some(conn.try_clone()?);
         if self.closed.load(Ordering::Relaxed) {
             return Ok(());
@@ -371,10 +458,7 @@ impl Session {
         self.phase.lock().unwrap().0 = Phase::Waiting;
         self.wake();
         let mut first = [0u8; 1];
-        if let Err(e) = conn.read_exact(&mut first) {
-            self.rejected.store(matches!(self.target, Target::Net { .. }) && !self.closed.load(Ordering::Relaxed), Ordering::Relaxed);
-            return Err(e);
-        }
+        conn.read_exact(&mut first)?;
         self.phase.lock().unwrap().0 = Phase::Live;
         self.wake();
         if first[0] == 0 { self.read_raw(conn, opts) } else { self.read_framed(conn, first[0], opts) }
@@ -476,8 +560,16 @@ impl Session {
 
     /// The Mac's sound: packets of [length u32][rate u32][channels u16][format u16] and PCM, into SDL.
     /// More than a fifth of a second waiting to be played means it fell behind the picture: skip ahead.
-    fn run_sound(&self) {
-        let Ok(mut conn) = dial(&self.target, SOUND) else { return };
+    fn run_sound(&self, name: &str) {
+        // Not before the picture's connection is in: on the network the phone lets the sound in only for a
+        // computer it is paired with, which the picture's connection may be about to settle.
+        while !self.entered.load(Ordering::Relaxed) {
+            if self.closed.load(Ordering::Relaxed) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(30));
+        }
+        let Ok(mut conn) = self.enter(SOUND, name, false) else { return };
         match conn.try_clone() {
             Ok(c) => *self.sound.lock().unwrap() = Some(c),
             Err(_) => return,

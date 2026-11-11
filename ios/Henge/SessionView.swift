@@ -133,6 +133,14 @@ struct SessionView: View {
                             .transition(.opacity)
                             .allowsHitTesting(false)
                     }
+                    if let ask = remote.pairing, !showDetails {
+                        PairingCard(ask: ask)
+                            .padding(18)
+                            .frame(maxWidth: min(full.width - 40, 420))
+                            .deskCard()
+                            .position(x: full.width / 2, y: full.height / 2)
+                            .transition(.opacity)
+                    }
                     if showRevealHint {
                         Label("Tap with four fingers to show the controls", systemImage: "hand.tap")
                             .font(.system(size: 15, weight: .medium))
@@ -222,7 +230,10 @@ struct SessionView: View {
             if on { RemoteDesktop.shared.start() } else { RemoteDesktop.shared.stop() }
         }
         .onChange(of: remoteHeadless) { _ in RemoteDesktop.shared.applyHeadless() }
-        .onChange(of: remoteWifi) { _ in RemoteDesktop.shared.announce() }
+        .onChange(of: remoteWifi) { on in
+            RemoteDesktop.shared.announce()
+            if on { RemoteDesktop.shared.openPairing() } // allowed for a first computer: let it ask
+        }
         .onAppear {
             UIApplication.shared.isIdleTimerDisabled = true
             HardwareMouse.shared.start()
@@ -245,7 +256,7 @@ struct SessionView: View {
     }
 
     /// When there is something of the app's to point at, iPadOS gets its own pointer back.
-    private var pointerNeeded: Bool { state == 2 || showDetails || confirmStop || error != nil }
+    private var pointerNeeded: Bool { state == 2 || showDetails || confirmStop || error != nil || remote.pairing != nil }
 
     // MARK: Layout
 
@@ -545,16 +556,25 @@ struct SessionView: View {
                 Section("Remote desktop") {
                     Toggle("Stream to a computer", isOn: $remoteEnabled)
                     Toggle("Hide the Mac here while streaming", isOn: $remoteHeadless)
-                    Toggle("Allow over Wi-Fi with a code", isOn: $remoteWifi)
+                    Toggle("Allow over Wi-Fi", isOn: $remoteWifi)
                     Toggle("Silent here while the computer plays the sound", isOn: $remoteMuteHere)
                     if remoteEnabled {
                         LabeledContent("Status", value: remote.connected ? "Streaming to \(remote.client)" : "Waiting on port \(RemoteDesktop.port)")
                         if remoteWifi {
                             if let ip = RemoteDesktop.wifiAddress() { LabeledContent("Wi-Fi address", value: "\(ip):\(RemoteDesktop.port)") }
-                            LabeledContent("Code", value: remote.code)
+                            LabeledContent("Paired computers", value: "\(remote.pairedCount)")
+                            if remote.pairingOpen {
+                                LabeledContent("Pairing", value: "Open for two minutes")
+                            } else {
+                                Button("Pair a Computer") { remote.openPairing() }
+                            }
+                            if remote.pairedCount > 0 {
+                                Button("Forget Paired Computers", role: .destructive) { remote.forgetComputers() }
+                            }
                         }
                     }
-                    Text("Open Veyron Remote on the computer. It finds this phone by itself on a cable, and on the same Wi-Fi once that is allowed here, where it asks for the code. Keep Veyron open: iOS pauses it in the background.")
+                    if let ask = remote.pairing { PairingCard(ask: ask) }
+                    Text("Open Veyron Remote on the computer. It finds this phone by itself on a cable, and on the same Wi-Fi once that is allowed here. For a new computer over Wi-Fi, tap Pair a Computer and connect from it within two minutes: it and this \(Device.name) both show a number, and you pair them only if it is the same. After that the computer connects by itself. Keep Veyron open: iOS pauses it in the background.")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 Section("Sharing") {
@@ -753,5 +773,26 @@ struct SessionView: View {
             henge_vm_stop()
         }
         close()
+    }
+}
+
+/// A computer on the network asks to pair: the number to compare with the one on its screen, and the answer.
+private struct PairingCard: View {
+    let ask: (name: String, number: String)
+
+    var body: some View {
+        VStack(spacing: 10) {
+            Text("Pair with \(ask.name)?").font(.system(size: 17, weight: .semibold)).foregroundStyle(Desk.text)
+            Text(ask.number).font(.system(size: 34, weight: .bold, design: .monospaced)).foregroundStyle(Desk.text)
+            Text("Veyron Remote on that computer shows a number too. Pair only if it is this one.")
+                .font(.footnote).foregroundStyle(Desk.dim).multilineTextAlignment(.center)
+            HStack(spacing: 10) {
+                Button("Refuse") { RemoteDesktop.shared.answerPairing(false, number: ask.number) }
+                    .buttonStyle(PrimaryButtonStyle(enabled: false))
+                Button("Pair") { RemoteDesktop.shared.answerPairing(true, number: ask.number) }
+                    .buttonStyle(PrimaryButtonStyle())
+            }
+        }
+        .frame(maxWidth: .infinity)
     }
 }

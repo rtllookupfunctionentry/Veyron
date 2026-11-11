@@ -11,7 +11,8 @@ import UIKit
 /// [type][a][x: Int16 LE][y: Int16 LE], type 1 move (x, y), 2 button (a, x = down), 3 scroll (x, y), 4 key (a = HID usage, x = down),
 /// 5 the computer's name (a = its length in bytes, which follow the message; shown instead of its address).
 /// The client is Henge Remote (remote/ in this repository), which reaches a phone on a cable through usbmuxd.
-/// Only USB clients by default. With Wi-Fi allowed, a network client must first send the 6-digit code shown on the phone.
+/// Only USB clients by default. With Wi-Fi allowed, a computer on the network gets in once it has been paired with
+/// (both show a number, the user agrees on the phone), and everything to and from it is encrypted: RemoteSeal.swift.
 ///
 /// Protocol 1 is the above with the picture as a raw H.264 Annex-B stream (`ffplay tcp://…` shows it). A client that sends type 16 (a = 2) within 0.3 s of connecting gets protocol 2 instead: everything from the
 /// phone comes as [type][flags][0][0][length: UInt32 LE] and a body:
@@ -41,8 +42,11 @@ final class RemoteDesktop: ObservableObject {
 
     @Published private(set) var connected = false
     @Published private(set) var client = ""
-    /// What a client over Wi-Fi must send first. New each time streaming is turned on.
-    @Published private(set) var code = ""
+    /// A computer on the network that is not known yet asks to pair: its name, and the number it should show too.
+    @Published private(set) var pairing: (name: String, number: String)?
+    @Published private(set) var pairedCount = RemoteSeal.paired.count
+    /// The user has opened pairing: for two minutes a computer that is not known may ask.
+    @Published private(set) var pairingOpen = false
 
     private let queue = DispatchQueue(label: "henge.remote", qos: .userInteractive)
     private let inputQueue = DispatchQueue(label: "henge.remote.input", qos: .userInteractive)
@@ -59,8 +63,11 @@ final class RemoteDesktop: ObservableObject {
     private var forceKey = true
     private var hadScreen = false
     private var unsent = 0
-    private var codeBytes: [UInt8] = []
-    private var lockedUntil = 0.0
+    private var seal: RemoteSeal?    // what `connection` is encrypted with; nil over USB
+    /// A computer waiting for the user's answer. `number` is what the screen shows, once there is one.
+    private var asking: (c: NWConnection, seal: RemoteSeal, name: String, number: String?, rest: Data)?
+    private var refusedUntil = 0.0
+    private var pairingUntil = 0.0
     private var statusListener: NWListener?
     private var macName = ""
     private var sharing = false      // between start() and stop(): a listener that fails is opened again
@@ -79,8 +86,7 @@ final class RemoteDesktop: ObservableObject {
     private var audioListener: NWListener?
     private var audioConn: NWConnection?
     private var audioTimer: DispatchSourceTimer?
-    private var audioCode: [UInt8] = []
-    private var audioLockedUntil = 0.0
+    private var audioSeal: RemoteSeal?
     private var audioUnsent = 0
     private var audioBuf = [UInt8](repeating: 0, count: 65536)
     // inputQueue only
@@ -100,12 +106,8 @@ final class RemoteDesktop: ObservableObject {
         queue.async { [self] in
             guard !sharing else { return }
             (sharing, deviceName) = (true, name)
-            let code = String(format: "%06d", Int.random(in: 0..<1_000_000))
-            codeBytes = Array(code.utf8)
-            DispatchQueue.main.async { self.code = code }
             open()
-            let codeNow = codeBytes
-            audioQueue.async { [self] in startAudio(code: codeNow) }
+            audioQueue.async { [self] in startAudio() }
         }
     }
 
@@ -122,9 +124,16 @@ final class RemoteDesktop: ObservableObject {
         }
     }
 
+    /// "Over Wi-Fi" is not to mean the mobile network too, where the carrier lets connections in.
+    private static var offCellular: NWParameters {
+        let p = NWParameters.tcp
+        p.prohibitedInterfaceTypes = [.cellular]
+        return p
+    }
+
     /// (queue) A listener that opens the port again by itself, a second after failing.
     private func listen(_ port: UInt16, _ service: NWListener.Service?, _ handler: @escaping (NWConnection) -> Void) -> NWListener? {
-        guard let l = try? NWListener(using: .tcp, on: NWEndpoint.Port(rawValue: port)!) else {
+        guard let l = try? NWListener(using: Self.offCellular, on: NWEndpoint.Port(rawValue: port)!) else {
             HengeLog.log("remote", "can't listen on \(port)")
             queue.asyncAfter(deadline: .now() + 1) { [weak self] in self?.open() }
             return nil
@@ -176,11 +185,10 @@ final class RemoteDesktop: ObservableObject {
 
     // MARK: - Sound (audioQueue)
 
-    private func startAudio(code: [UInt8]) {
-        audioCode = code
+    private func startAudio() {
         guard audioListener == nil else { return }
         do {
-            let l = try NWListener(using: .tcp, on: NWEndpoint.Port(rawValue: Self.audioPort)!)
+            let l = try NWListener(using: Self.offCellular, on: NWEndpoint.Port(rawValue: Self.audioPort)!)
             l.newConnectionHandler = { [weak self] c in self?.acceptAudio(c) }
             l.start(queue: audioQueue)
             audioListener = l
@@ -189,10 +197,10 @@ final class RemoteDesktop: ObservableObject {
         }
     }
 
-    /// The same rule as the picture's: USB, or Wi-Fi when allowed and with the code first.
+    /// The same rule as the picture's: USB, or Wi-Fi when allowed and for a computer already paired with.
     private func acceptAudio(_ c: NWConnection) {
         let usb = Self.isLoopback(c.endpoint)
-        if !usb && (!UserDefaults.standard.bool(forKey: Self.wifiKey) || CACurrentMediaTime() < audioLockedUntil) {
+        if !usb && !UserDefaults.standard.bool(forKey: Self.wifiKey) {
             c.cancel()
             return
         }
@@ -204,14 +212,14 @@ final class RemoteDesktop: ObservableObject {
             }
         }
         c.start(queue: audioQueue)
-        if usb { promoteAudio(c); return }
-        c.receive(minimumIncompleteLength: 6, maximumLength: 6) { [weak self] data, _, _, _ in
-            guard let self else { return }
-            if let data, [UInt8](data) == self.audioCode, !self.audioCode.isEmpty {
-                self.promoteAudio(c)
-            } else {
-                self.audioLockedUntil = CACurrentMediaTime() + 2
-                c.cancel()
+        if usb { promoteAudio(c, nil); return }
+        RemoteSeal.accept(c) { [weak self] seal in
+            guard let self, let seal else { c.cancel(); return }
+            seal.greeting(c) { hello in
+                // Pairing happens on the picture's connection; the sound waits for it and comes again.
+                guard let hello, hello.knows, RemoteSeal.knows(seal.computer) else { c.cancel(); return }
+                seal.send(c, Data([RemoteSeal.go]))
+                self.promoteAudio(c, seal)
             }
         }
         audioQueue.asyncAfter(deadline: .now() + 10) { [weak self] in
@@ -219,9 +227,9 @@ final class RemoteDesktop: ObservableObject {
         }
     }
 
-    private func promoteAudio(_ c: NWConnection) {
+    private func promoteAudio(_ c: NWConnection, _ seal: RemoteSeal?) {
         dropAudio()
-        audioConn = c
+        (audioConn, audioSeal) = (c, seal)
         audioUnsent = 0
         let muteHere = UserDefaults.standard.object(forKey: Self.muteHereKey) as? Bool ?? true
         henge_audio_tap(1, muteHere ? 1 : 0)
@@ -257,16 +265,17 @@ final class RemoteDesktop: ObservableObject {
         packet.append(contentsOf: audioBuf[0..<n])
         audioUnsent += packet.count
         let size = packet.count
-        c.send(content: packet, completion: .contentProcessed { [weak self] _ in
+        let sent = NWConnection.SendCompletion.contentProcessed { [weak self] _ in
             self?.audioQueue.async { if c === self?.audioConn { self?.audioUnsent = max(0, (self?.audioUnsent ?? 0) - size) } }
-        })
+        }
+        if let audioSeal { audioSeal.send(c, packet, completion: sent) } else { c.send(content: packet, completion: sent) }
     }
 
     private func dropAudio() {
         audioTimer?.cancel()
         audioTimer = nil
         guard let c = audioConn else { return }
-        audioConn = nil
+        (audioConn, audioSeal) = (nil, nil)
         c.cancel()
         henge_audio_tap(0, 0)
     }
@@ -308,8 +317,8 @@ final class RemoteDesktop: ObservableObject {
 
     private func accept(_ c: NWConnection) {
         let usb = Self.isLoopback(c.endpoint)
-        if !usb && (!UserDefaults.standard.bool(forKey: Self.wifiKey) || CACurrentMediaTime() < lockedUntil) {
-            HengeLog.log("remote", "refused \(c.endpoint): not over USB, and Wi-Fi is off or locked after a wrong code")
+        if !usb && !UserDefaults.standard.bool(forKey: Self.wifiKey) {
+            HengeLog.log("remote", "refused \(c.endpoint): not over USB, and Wi-Fi is not allowed")
             c.cancel()
             return
         }
@@ -318,39 +327,141 @@ final class RemoteDesktop: ObservableObject {
             switch state {
             case .failed(let error):
                 HengeLog.log("remote", "connection to \(c.endpoint) failed: \(error)")
-                self.queue.async { if c === self.connection { self.drop() } }
-            case .cancelled: self.queue.async { if c === self.connection { self.drop() } }
+                self.queue.async { if c === self.connection { self.drop() }; self.gone(c) }
+            case .cancelled: self.queue.async { if c === self.connection { self.drop() }; self.gone(c) }
             default: break
             }
         }
         // Its own queue: `queue` waits on the GPU for each frame, which under a game would hold up input behind it.
         c.start(queue: netQueue)
-        if usb { promote(c); return }
-        // Over Wi-Fi the first 6 bytes must be the code shown on the phone; until then no picture and no input.
-        // A wrong code shuts Wi-Fi out for 2 s, so guessing a million codes takes weeks.
-        c.receive(minimumIncompleteLength: 6, maximumLength: 6) { [weak self] data, _, _, _ in
-            self?.queue.async {
-                guard let self else { return }
-                if let data, [UInt8](data) == self.codeBytes, !self.codeBytes.isEmpty {
-                    self.promote(c)
-                } else {
-                    HengeLog.log("remote", "wrong code from \(c.endpoint)")
-                    self.lockedUntil = CACurrentMediaTime() + 2
-                    c.cancel()
-                }
+        if usb { promote(c, nil, Data()); return }
+        // Over a network: the keys first, then who it is. No picture and no input before the phone knows it.
+        RemoteSeal.accept(c) { [weak self] seal in
+            guard let self, let seal else {
+                HengeLog.log("remote", "refused \(c.endpoint): not a Veyron Remote that this build can talk to")
+                c.cancel()
+                return
+            }
+            seal.greeting(c) { hello in
+                guard let hello else { c.cancel(); return }
+                self.queue.async { self.admit(c, seal, knows: hello.knows, name: hello.name, pledge: hello.pledge, rest: hello.rest) }
             }
         }
         queue.asyncAfter(deadline: .now() + 10) { [weak self] in
-            if let self, c !== self.connection { c.cancel() }
+            if let self, c !== self.connection, c !== self.asking?.c { c.cancel() }
         }
     }
 
-    /// One client at a time: the newest that got in wins.
-    private func promote(_ c: NWConnection) {
+    /// (queue) A computer on the network has shown its key. One the phone has paired with, and that knows the
+    /// phone, goes straight in. Any other may only ask while the user has pairing open, one at a time, and
+    /// after any attempt that did not end in a pairing none may for ten seconds: each attempt has a one in a
+    /// million chance of a number that fools the user, so there must not be many.
+    private func admit(_ c: NWConnection, _ seal: RemoteSeal, knows: Bool, name: String, pledge: Data, rest: Data) {
+        if knows && RemoteSeal.knows(seal.computer) {
+            seal.send(c, Data([RemoteSeal.go]))
+            promote(c, seal, rest)
+            return
+        }
+        if let a = asking, a.seal.computer == seal.computer {
+            // The same computer again (its key is proven by the handshake): it gave up on its first try, which
+            // the phone need not have noticed. The new try takes the old one's place.
+            asking = nil
+            a.c.cancel()
+            DispatchQueue.main.async { self.pairing = nil }
+        }
+        guard CACurrentMediaTime() < pairingUntil, asking == nil, CACurrentMediaTime() >= refusedUntil else {
+            HengeLog.log("remote", "refused \(name) at \(c.endpoint): not paired, and pairing is not open or was just turned down")
+            c.cancel()
+            return
+        }
+        // The phone's random bytes go out with the request; the computer's come back and must be the ones it
+        // promised in its greeting. Only then is there a number to show.
+        let mine = RemoteSeal.random()
+        asking = (c, seal, name, nil, Data())
+        seal.send(c, Data([RemoteSeal.pair]) + mine)
+        seal.take(c, 32, have: rest) { [weak self] answer in
+            self?.queue.async {
+                guard let self, c === self.asking?.c else { return }
+                guard let (theirs, rest) = answer, let number = seal.number(mine: mine, theirs: theirs, pledge: pledge) else {
+                    HengeLog.log("remote", "\(name) at \(c.endpoint) did not keep to its part of the pairing")
+                    self.asking = nil
+                    self.refusedUntil = CACurrentMediaTime() + 10
+                    c.cancel()
+                    return
+                }
+                let shown = (name, String(number.prefix(3)) + " " + String(number.suffix(3)))
+                self.asking = (c, seal, name, shown.1, rest)
+                HengeLog.log("remote", "\(name) at \(c.endpoint) asks to pair")
+                DispatchQueue.main.async { self.pairing = shown }
+            }
+        }
+        queue.asyncAfter(deadline: .now() + 60) { [weak self] in
+            if let self, c === self.asking?.c { self.answer(false, to: nil) }
+        }
+    }
+
+    /// The user's answer to a computer asking to pair, and the number that was on the screen when it was given.
+    func answerPairing(_ yes: Bool, number: String) {
+        queue.async { self.answer(yes, to: number) }
+    }
+
+    /// The user allows computers that are not known yet to ask, for two minutes.
+    func openPairing() {
+        queue.async { self.pairingUntil = CACurrentMediaTime() + 120 }
+        pairingOpen = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 120) { [weak self] in
+            self?.queue.async {
+                guard let self, CACurrentMediaTime() >= self.pairingUntil else { return } // opened again meanwhile
+                DispatchQueue.main.async { self.pairingOpen = false }
+            }
+        }
+    }
+
+    private func answer(_ yes: Bool, to number: String?) {
+        guard let a = asking else { return }
+        // A yes is for the request whose number the user saw, and for no other that took its place since.
+        if yes && (a.number == nil || a.number != number) { return }
+        asking = nil
+        HengeLog.log("remote", "pairing with \(a.name): \(yes ? "agreed" : "refused")")
+        if yes {
+            RemoteSeal.remember(a.seal.computer, name: a.name)
+            pairingUntil = 0 // one computer for each time pairing is opened
+            a.seal.send(a.c, Data([RemoteSeal.go]))
+            promote(a.c, a.seal, a.rest)
+        } else {
+            refusedUntil = CACurrentMediaTime() + 10
+            a.c.cancel()
+        }
+        let count = RemoteSeal.paired.count
+        DispatchQueue.main.async {
+            (self.pairing, self.pairedCount) = (nil, count)
+            if yes { self.pairingOpen = false }
+        }
+    }
+
+    /// (queue) A connection ended: if it was the one asking to pair, the question goes with it.
+    private func gone(_ c: NWConnection) {
+        guard c === asking?.c else { return }
+        asking = nil
+        refusedUntil = CACurrentMediaTime() + 10
+        DispatchQueue.main.async { self.pairing = nil }
+    }
+
+    /// Every computer has to pair again.
+    func forgetComputers() {
+        RemoteSeal.forgetAll()
+        pairedCount = 0
+        queue.async { if self.seal != nil { self.drop() } }
+        audioQueue.async { if self.audioSeal != nil { self.dropAudio() } }
+    }
+
+    /// One client at a time: the newest that got in wins. `rest`: what it sent behind its greeting.
+    private func promote(_ c: NWConnection, _ seal: RemoteSeal?, _ rest: Data) {
         drop()
-        connection = c
+        (connection, self.seal) = (c, seal)
         begin(c)
-        receive(c)
+        if !rest.isEmpty { inputQueue.async { self.handle(rest) } }
+        receive(c, seal)
     }
 
     private func begin(_ c: NWConnection) {
@@ -394,12 +505,18 @@ final class RemoteDesktop: ObservableObject {
         out.append(contentsOf: [kind, flags, 0, 0])
         withUnsafeBytes(of: UInt32(body.count).littleEndian) { out.append(contentsOf: $0) }
         out.append(body)
+        wire(c, out)
+    }
+
+    /// (queue) Bytes for the client, encrypted when it is on the network, and counted until they have left.
+    private func wire(_ c: NWConnection, _ out: Data) {
         let size = out.count
         unsent += size
-        c.send(content: out, completion: .contentProcessed { [weak self] _ in
+        let sent = NWConnection.SendCompletion.contentProcessed { [weak self] _ in
             guard let self else { return }
             self.queue.async { if c === self.connection { self.unsent = max(0, self.unsent - size) } }
-        })
+        }
+        if let seal { seal.send(c, out, completion: sent) } else { c.send(content: out, completion: sent) }
     }
 
     private func pong(_ echo: [UInt8]) {
@@ -457,7 +574,7 @@ final class RemoteDesktop: ObservableObject {
         timer = nil
         let had = connection != nil
         connection?.cancel()
-        connection = nil
+        (connection, seal) = (nil, nil)
         if let s = session { VTCompressionSessionInvalidate(s) }
         session = nil
         pool = nil
@@ -482,7 +599,8 @@ final class RemoteDesktop: ObservableObject {
     private func tick() {
         guard connection != nil, unsent < 1_000_000 else { return } // the client is behind: skip, don't queue
         if !formDecided { // a moment for the client's hello, which decides what the first byte sent is
-            guard CACurrentMediaTime() >= formDeadline else { return }
+            // A computer on the network always says hello, though after a pairing only once its own user has agreed.
+            guard seal == nil, CACurrentMediaTime() >= formDeadline else { return }
             formDecided = true
         }
         var w: Int32 = 0, h: Int32 = 0
@@ -598,25 +716,28 @@ final class RemoteDesktop: ObservableObject {
             message(1, flags: (keyframe ? 1 : 0) | (encodingHEVC ? 2 : 0), body)
             return
         }
-        let size = out.count
-        unsent += size
-        c.send(content: out, completion: .contentProcessed { [weak self] _ in
-            guard let self else { return }
-            self.queue.async { if c === self.connection { self.unsent = max(0, self.unsent - size) } }
-        })
+        wire(c, out)
     }
 
     // MARK: - Input
 
-    private func receive(_ c: NWConnection) {
+    private func receive(_ c: NWConnection, _ seal: RemoteSeal?) {
         c.receive(minimumIncompleteLength: 1, maximumLength: 4096) { [weak self] data, _, done, error in
             guard let self else { return }
-            if let data, !data.isEmpty { self.inputQueue.async { self.handle(data) } }
-            if done || error != nil {
+            var ended = done || error != nil
+            if let data, !data.isEmpty {
+                if let seal {
+                    if let plain = seal.open(data) { if !plain.isEmpty { self.inputQueue.async { self.handle(plain) } } }
+                    else { HengeLog.log("remote", "what \(c.endpoint) sent was not sealed by it"); ended = true }
+                } else {
+                    self.inputQueue.async { self.handle(data) }
+                }
+            }
+            if ended {
                 self.queue.async { if c === self.connection { self.drop() } }
                 return
             }
-            self.receive(c)
+            self.receive(c, seal)
         }
     }
 

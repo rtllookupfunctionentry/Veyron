@@ -2,12 +2,13 @@
 //! and controller. One window, SDL for everything the system does, egui for what is drawn over the picture.
 //!
 //!     veyron-remote                       look for phones, show the list
-//!     veyron-remote 192.168.1.20:5901 --code 123456     connect straight away
+//!     veyron-remote 192.168.1.20:5901     connect straight away
 //!     veyron-remote --background          start hidden and wait for a Mac (what "Start at login" runs)
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 mod config;
 mod discover;
+mod seal;
 mod session;
 mod ui;
 mod usbmux;
@@ -27,9 +28,8 @@ use std::time::{Duration, Instant};
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let background = args.iter().any(|a| a == "--background");
-    let code = args.iter().position(|a| a == "--code").and_then(|i| args.get(i + 1)).cloned().unwrap_or_default();
-    let address = args.iter().find(|a| !a.starts_with("--") && **a != code).cloned();
-    unsafe { run(background, address.map(|a| (a, code))) }
+    let address = args.iter().find(|a| !a.starts_with("--")).cloned();
+    unsafe { run(background, address) }
 }
 
 fn this_computer() -> String {
@@ -208,7 +208,7 @@ struct Live {
     quiet: bool,
 }
 
-unsafe fn run(background: bool, direct: Option<(String, String)>) {
+unsafe fn run(background: bool, direct: Option<String>) {
     unsafe {
         SDL_SetAppMetadata(c"Veyron Remote".as_ptr(), c"0.1.0".as_ptr(), c"veyron-remote".as_ptr());
         SDL_SetHint(SDL_HINT_AUDIO_DEVICE_SAMPLE_FRAMES, c"256".as_ptr());
@@ -283,9 +283,9 @@ unsafe fn run(background: bool, direct: Option<(String, String)>) {
         let mut wait = Duration::from_millis(100);
         let mut repaint_at: Option<Instant> = None; // when egui wants to be drawn again (an animation, a tooltip)
 
-        if let Some((address, code)) = direct {
+        if let Some(address) = direct {
             let (host, port) = address.rsplit_once(':').map_or((address.clone(), session::PORT), |(h, p)| (h.to_string(), p.parse().unwrap_or(session::PORT)));
-            retry = Some((Instant::now(), Target::Net { host: host.clone(), port, code }, host));
+            retry = Some((Instant::now(), Target::Net { host: host.clone(), port }, host));
         }
 
         'app: loop {
@@ -488,13 +488,7 @@ unsafe fn run(background: bool, direct: Option<(String, String)>) {
                         if !l.quiet {
                             st.error = Some((reason, started.elapsed().as_secs_f64()));
                         }
-                        if let (true, Target::Net { host, port, .. }) = (rejected, &l.target) {
-                            // Trying the same code again would only be turned down again: forget it and ask.
-                            cfg.saved.retain(|s| !(s.host == *host && s.port == *port));
-                            cfg.save();
-                            let target = Target::Net { host: host.clone(), port: *port, code: String::new() };
-                            (st.prompt, st.prompt_code) = (Some(discover::Found { target, title: l.title.clone(), usb: false, info: None }), String::new());
-                        }
+
                         video.clear();
                         if fullscreen {
                             fullscreen = false;
@@ -644,6 +638,8 @@ unsafe fn run(background: bool, direct: Option<(String, String)>) {
                             retrying: retry.is_some(),
                             has_picture: video.width > 0,
                             captured,
+                            pairing: live.as_ref().and_then(|l| l.session.pairing()),
+                            agreed: live.as_ref().is_some_and(|l| l.session.has_agreed()),
                             seamless: seamless_mode,
                             fullscreen,
                             stats: &stats,
@@ -693,8 +689,8 @@ unsafe fn run(background: bool, direct: Option<(String, String)>) {
             for action in actions {
                 match action {
                     ui::Action::Connect(target, title) => {
-                        if let Target::Net { host, port, code } = &target {
-                            cfg.remember(host, *port, code);
+                        if let Target::Net { host, port } = &target {
+                            cfg.remember(host, *port);
                             cfg.save();
                         }
                         connect = Some((target, title, false));
@@ -712,6 +708,13 @@ unsafe fn run(background: bool, direct: Option<(String, String)>) {
                         }
                     }
                     ui::Action::Capture => captured = true,
+                    ui::Action::Agree => {
+                        // The numbers are the same, so the key that made them is the phone's: remember it.
+                        if let Some((l, key)) = live.as_ref().and_then(|l| Some((l, l.session.agree()?))) {
+                            cfg.pair(&key, &l.title);
+                            cfg.save();
+                        }
+                    }
                     ui::Action::Fullscreen => {
                         fullscreen = !fullscreen;
                         SDL_SetWindowFullscreen(window, fullscreen);
@@ -750,7 +753,8 @@ fn open(cfg: &Config, wake: u32, target: Target, title: String, quiet: bool, ret
         video.clear();
     }
     found.paused.store(true, Ordering::Relaxed);
-    let options = Options { hardware: cfg.hardware, sound: cfg.sound, tuning: cfg.tuning, name: this_computer(), wake };
+    let known = cfg.paired.iter().map(|p| p.key.clone()).collect();
+    let options = Options { hardware: cfg.hardware, sound: cfg.sound, tuning: cfg.tuning, name: this_computer(), wake, known };
     Live { session: Session::open(target.clone(), options), target, title, connected: again, quiet }
 }
 
