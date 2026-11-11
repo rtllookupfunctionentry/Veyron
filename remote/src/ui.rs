@@ -219,7 +219,8 @@ fn card(ui: &mut Ui, glyph: &str, title: &str, detail: &str, dot: Option<Color32
 }
 
 fn field(ui: &mut Ui, text: &mut String, hint: &str, width: f32) -> Response {
-    ui.add(egui::TextEdit::singleline(text).hint_text(RichText::new(hint).color(FAINT)).desired_width(width).margin(vec2(10.0, 7.0)))
+    // As tall as a button, so the two line up side by side.
+    ui.add(egui::TextEdit::singleline(text).hint_text(RichText::new(hint).color(FAINT)).desired_width(width).margin(vec2(10.0, 7.0)).min_size(vec2(0.0, 32.0)).vertical_align(Align::Center))
 }
 
 fn code_only(text: &mut String) {
@@ -272,9 +273,12 @@ pub fn home(ui: &mut Ui, st: &mut State, cfg: &mut Config, found: &[Found], no_u
             ui.add_space(14.0);
             caps(ui, "BY ADDRESS");
             Frame::new().fill(PANEL).stroke(Stroke::new(1.0, LINE)).corner_radius(14).inner_margin(14).show(ui, |ui| {
+                ui.set_width(ui.available_width()); // as wide as the cards above
                 ui.horizontal(|ui| {
                     code_only(&mut st.code);
-                    let host = field(ui, &mut st.host, "192.168.1.20", ui.available_width() - 214.0);
+                    // The address takes what the code and the button leave.
+                    let connect = ui.painter().layout_no_wrap("Connect".to_string(), semi(13.0), Color32::PLACEHOLDER).size().x + 28.0;
+                    let host = field(ui, &mut st.host, "192.168.1.20", ui.available_width() - connect - 70.0 - 2.0 * ui.spacing().item_spacing.x);
                     let code = field(ui, &mut st.code, "Code", 70.0);
                     let enter = (host.lost_focus() || code.lost_focus()) && ui.input(|i| i.key_pressed(egui::Key::Enter));
                     if (button(ui, "Connect", true).clicked() || enter) && !st.host.trim().is_empty() {
