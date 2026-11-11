@@ -68,7 +68,7 @@ class Noise:
 class Sealed:
     """A socket after the handshake: sendall and read as before, in Noise's transport messages."""
 
-    def __init__(self, c):
+    def __init__(self, c, greeted=True):
         f = c.makefile("rb")
         if f.read(4) != b"VYN2":
             raise OSError("not a Veyron Remote")
@@ -89,8 +89,9 @@ class Sealed:
         to_phone, to_computer = Noise.hkdf(noise.ck, b"")
         self.c, self.f, self.lock, self.binding = c, f, threading.Lock(), noise.h
         self.opening, self.sealing, self.opened, self.sent, self.plain = ChaCha20Poly1305(to_phone), ChaCha20Poly1305(to_computer), 0, 0, b""
-        flags, n = self.read(2)
-        self.knows, self.name, self.pledge = bool(flags & 1), self.read(n).decode(errors="replace"), self.read(32)
+        if greeted:  # the status port goes by the key alone
+            flags, n = self.read(2)
+            self.knows, self.name, self.pledge = bool(flags & 1), self.read(n).decode(errors="replace"), self.read(32)
 
     def pair(self):
         """Asks to pair: this side's random bytes go with the request, the computer's come back and must be
@@ -126,7 +127,7 @@ class Sealed:
         self.c.close()
 
 
-def serve(port, handler, sealed=True):
+def serve(port, handler, greeted=True):
     s = socket.socket()
     s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     s.bind(("127.0.0.1", port))
@@ -137,7 +138,7 @@ def serve(port, handler, sealed=True):
 
         def run(c=c):
             try:
-                handler(Sealed(c) if sealed else c)
+                handler(Sealed(c, greeted))
             except Exception as e:
                 print(f"port {port}: {e}", flush=True)
                 c.close()
@@ -245,7 +246,8 @@ def sound(c):
 
 
 def status(c):
-    c.sendall(json.dumps({"name": "Test Mac", "running": True}).encode())
+    if c.computer in PAIRED or "--trusting" in sys.argv:  # --trusting: for session.rs's test of the status port
+        c.sendall(json.dumps({"name": "Test Mac", "running": True}).encode())
     c.close()
 
 

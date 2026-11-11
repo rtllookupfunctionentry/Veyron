@@ -274,7 +274,7 @@ final class RemoteSeal {
         UserDefaults.standard.set(paired.filter { $0["key"] != key } + [["key": key, "name": name]], forKey: pairedKey)
     }
 
-    static func forgetAll() {
-        UserDefaults.standard.removeObject(forKey: pairedKey)
+    static func forget(_ key: String) {
+        UserDefaults.standard.set(paired.filter { $0["key"] != key }, forKey: pairedKey)
     }
 }

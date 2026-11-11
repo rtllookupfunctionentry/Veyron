@@ -562,14 +562,16 @@ struct SessionView: View {
                         LabeledContent("Status", value: remote.connected ? "Streaming to \(remote.client)" : "Waiting on port \(RemoteDesktop.port)")
                         if remoteWifi {
                             if let ip = RemoteDesktop.wifiAddress() { LabeledContent("Wi-Fi address", value: "\(ip):\(RemoteDesktop.port)") }
-                            LabeledContent("Paired computers", value: "\(remote.pairedCount)")
+                            if remote.paired.isEmpty { LabeledContent("Paired computers", value: "None") }
+                            ForEach(remote.paired, id: \.self) { computer in
+                                LabeledContent(computer["name"] ?? "A computer") {
+                                    Button("Forget", role: .destructive) { remote.forget(computer["key"] ?? "") }.buttonStyle(.borderless)
+                                }
+                            }
                             if remote.pairingOpen {
                                 LabeledContent("Pairing", value: "Open for two minutes")
                             } else {
                                 Button("Pair a Computer") { remote.openPairing() }
-                            }
-                            if remote.pairedCount > 0 {
-                                Button("Forget Paired Computers", role: .destructive) { remote.forgetComputers() }
                             }
                         }
                     }

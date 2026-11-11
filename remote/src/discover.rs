@@ -1,5 +1,6 @@
 //! Looks for Macs to connect to: iPhones on a cable (asked of usbmuxd every second and a half) and Veyron
-//! announcing itself on the local network (Bonjour, `_henge._tcp`, from builds with protocol 2).
+//! announcing itself on the local network (Bonjour, `_henge._tcp`, from builds with protocol 2). Which Mac a
+//! phone runs is asked of each again and again: on the network a phone tells it once this computer is paired.
 use crate::session::{self, ServerInfo, Target};
 use crate::usbmux;
 use std::collections::HashMap;
@@ -47,7 +48,7 @@ impl Discovery {
     fn watch_usb(&self, wake: &dyn Fn()) {
         let mut names: HashMap<String, String> = HashMap::new();
         let mut last = String::new();
-        loop {
+        for tick in 0u32.. {
             if !self.paused.load(Ordering::Relaxed) {
                 let devices = usbmux::devices();
                 self.no_usbmuxd.store(devices.is_err(), Ordering::Relaxed);
@@ -62,8 +63,17 @@ impl Discovery {
                     let info = session::status(&target);
                     found.push(Found { title: names.get(&dev.udid).cloned().unwrap_or_else(|| "iPhone".into()), target, usb: true, info });
                 }
-                let now = format!("{found:?}{}", self.no_usbmuxd.load(Ordering::Relaxed));
                 *self.usb.lock().unwrap() = found;
+                if tick % 4 == 0 {
+                    let targets: Vec<Target> = self.wifi.lock().unwrap().iter().map(|f| f.target.clone()).collect();
+                    for target in targets {
+                        let info = session::status(&target); // asked with nothing locked: it may take seconds
+                        if let Some(f) = self.wifi.lock().unwrap().iter_mut().find(|f| f.target == target) {
+                            f.info = info;
+                        }
+                    }
+                }
+                let now = format!("{:?}{}", self.all(), self.no_usbmuxd.load(Ordering::Relaxed));
                 if now != last {
                     last = now;
                     wake();
@@ -85,9 +95,7 @@ impl Discovery {
                     // The stream's port is in the text record; the announcement's own is the status port's.
                     let port = svc.txt_properties.get_property_val_str("port").and_then(|p| p.parse().ok()).unwrap_or(svc.get_port());
                     let target = Target::Net { host: ip.to_string(), port };
-                    // iOS gives apps "iPhone" for the device's name, so what tells phones apart is the Mac each runs.
-                    let info = session::status(&target);
-                    seen.insert(svc.get_fullname().to_string(), Found { target, title: name, usb: false, info });
+                    seen.insert(svc.get_fullname().to_string(), Found { target, title: name, usb: false, info: None });
                 }
                 mdns_sd::ServiceEvent::ServiceRemoved(_, fullname) => {
                     seen.remove(&fullname);
@@ -96,7 +104,13 @@ impl Discovery {
             }
             let mut list: Vec<Found> = seen.values().cloned().collect();
             list.sort_by(|a, b| a.title.cmp(&b.title));
-            *self.wifi.lock().unwrap() = list;
+            let mut wifi = self.wifi.lock().unwrap();
+            for f in &mut list {
+                // Which Mac it runs is the other thread's to ask; what it last heard stays.
+                f.info = wifi.iter().find(|old| old.target == f.target).and_then(|old| old.info.clone());
+            }
+            *wifi = list;
+            drop(wifi);
             wake();
         }
     }

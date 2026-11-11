@@ -223,7 +223,7 @@ fn dial(target: &Target, offset: u16) -> io::Result<Conn> {
 }
 
 /// A phone on the network, with the keys agreed: the sealed connection, the phone's key in hex, and the
-/// handshake's hash. The status port is the one thing asked in the clear (the Mac's name, and whether it runs).
+/// handshake's hash.
 fn dial_sealed(target: &Target, offset: u16) -> io::Result<(Conn, String, Vec<u8>)> {
     let Conn::Tcp(s) = dial(target, offset)? else { unreachable!("a network target dials TCP") };
     let link = seal::connect(s, seal::identity()?)?;
@@ -231,13 +231,17 @@ fn dial_sealed(target: &Target, offset: u16) -> io::Result<(Conn, String, Vec<u8
 }
 
 /// Whether a Mac is running on that phone and what it is called, without taking the stream from anyone.
-/// None from a Veyron that only has the first protocol, or when Veyron is not sharing.
+/// Asked in the clear on a cable. Over a network it is asked sealed, and the phone tells only a computer it
+/// has paired with. None when it does not tell, or when Veyron is not sharing.
 pub fn status(target: &Target) -> Option<ServerInfo> {
-    let c = dial(target, STATUS).ok()?;
+    let c = match target {
+        Target::Usb { .. } => dial(target, STATUS).ok()?,
+        Target::Net { .. } => dial_sealed(target, STATUS).ok()?.0,
+    };
     c.set_read_timeout(Some(Duration::from_secs(2)));
-    let mut text = String::new();
-    c.take(4096).read_to_string(&mut text).ok()?;
-    serde_json::from_str(&text).ok()
+    let mut json = Vec::new();
+    let _ = c.take(4096).read_to_end(&mut json); // a sealed connection ends in an error, with all of it read
+    serde_json::from_slice(&json).ok()
 }
 
 fn explain(target: &Target, e: &io::Error) -> String {
@@ -673,5 +677,24 @@ impl Meter {
             height,
         };
         (self.since, self.bytes, self.pictures, self.decode, self.latency_us) = (Instant::now(), 0, 0, Duration::ZERO, 0);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Against `python3 tests/fake-phone.py --v2 --trusting`, and again without `--trusting` with FAKE_PHONE=strict:
+    /// the phone's half of the handshake there is written out by hand, as the phone's own is.
+    #[test]
+    #[ignore]
+    fn status_is_for_paired_computers() {
+        let info = status(&Target::Net { host: "127.0.0.1".into(), port: 15901 });
+        if std::env::var("FAKE_PHONE").as_deref() == Ok("strict") {
+            assert!(info.is_none(), "a phone that has not paired with this computer says nothing");
+        } else {
+            let info = info.expect("the status, sealed");
+            assert!(info.running && info.name == "Test Mac");
+        }
     }
 }

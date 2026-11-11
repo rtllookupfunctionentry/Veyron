@@ -27,7 +27,8 @@ import UIKit
 ///   11 the pointer by position: a = buttons down (bit 0 left, 1 right, 2 middle), x and y 0...32767 across the Mac's
 ///      screen. It moves the Mac's pointer to where the computer's is over the picture, with no capturing.
 /// Port 5904 answers one line of JSON (name, running) and hangs up, so a computer can list this phone without taking the
-/// stream; with Wi-Fi allowed the phone also announces itself on the network as `_henge._tcp`.
+/// stream: in the clear on a cable, and over a network only to a paired computer, after the same handshake. With
+/// Wi-Fi allowed the phone also announces itself on the network as `_henge._tcp`, by the device's name alone.
 final class RemoteDesktop: ObservableObject {
     static let shared = RemoteDesktop()
     static let enabledKey = "henge.remote.enabled"
@@ -44,7 +45,7 @@ final class RemoteDesktop: ObservableObject {
     @Published private(set) var client = ""
     /// A computer on the network that is not known yet asks to pair: its name, and the number it should show too.
     @Published private(set) var pairing: (name: String, number: String)?
-    @Published private(set) var pairedCount = RemoteSeal.paired.count
+    @Published private(set) var paired = RemoteSeal.paired
     /// The user has opened pairing: for two minutes a computer that is not known may ask.
     @Published private(set) var pairingOpen = false
 
@@ -432,9 +433,9 @@ final class RemoteDesktop: ObservableObject {
             refusedUntil = CACurrentMediaTime() + 10
             a.c.cancel()
         }
-        let count = RemoteSeal.paired.count
+        let paired = RemoteSeal.paired
         DispatchQueue.main.async {
-            (self.pairing, self.pairedCount) = (nil, count)
+            (self.pairing, self.paired) = (nil, paired)
             if yes { self.pairingOpen = false }
         }
     }
@@ -447,12 +448,12 @@ final class RemoteDesktop: ObservableObject {
         DispatchQueue.main.async { self.pairing = nil }
     }
 
-    /// Every computer has to pair again.
-    func forgetComputers() {
-        RemoteSeal.forgetAll()
-        pairedCount = 0
-        queue.async { if self.seal != nil { self.drop() } }
-        audioQueue.async { if self.audioSeal != nil { self.dropAudio() } }
+    /// That computer (by its key, as the list has it) has to pair again, and is cut off if it is the one connected.
+    func forget(_ key: String) {
+        RemoteSeal.forget(key)
+        paired = RemoteSeal.paired
+        queue.async { if self.seal?.computer.base64EncodedString() == key { self.drop() } }
+        audioQueue.async { if self.audioSeal?.computer.base64EncodedString() == key { self.dropAudio() } }
     }
 
     /// One client at a time: the newest that got in wins. `rest`: what it sent behind its greeting.
@@ -556,17 +557,27 @@ final class RemoteDesktop: ObservableObject {
         queue.async { self.message(4, Data(text.utf8)) }
     }
 
-    /// Port 5904: whether a Mac is running here and what it is called, then goodbye.
+    /// Port 5904: whether a Mac is running here and what it is called, then goodbye. On a cable in the clear;
+    /// over a network sealed, and only for a computer paired with: to the rest this is a phone and no more.
     private func answerStatus(_ c: NWConnection) {
-        guard Self.isLoopback(c.endpoint) || UserDefaults.standard.bool(forKey: Self.wifiKey) else {
+        let usb = Self.isLoopback(c.endpoint)
+        guard usb || UserDefaults.standard.bool(forKey: Self.wifiKey) else {
             c.cancel()
             return
         }
         var w: Int32 = 0, h: Int32 = 0
         let info: [String: Any] = ["name": macName, "running": henge_vm_stream_frame(nil, &w, &h) >= 0]
+        let json = (try? JSONSerialization.data(withJSONObject: info)) ?? Data()
         c.start(queue: queue)
-        c.send(content: try? JSONSerialization.data(withJSONObject: info), contentContext: .finalMessage, isComplete: true,
-               completion: .contentProcessed { _ in c.cancel() })
+        if usb {
+            c.send(content: json, contentContext: .finalMessage, isComplete: true, completion: .contentProcessed { _ in c.cancel() })
+            return
+        }
+        RemoteSeal.accept(c) { seal in
+            guard let seal, RemoteSeal.knows(seal.computer) else { c.cancel(); return }
+            seal.send(c, json, completion: .contentProcessed { _ in c.cancel() })
+        }
+        queue.asyncAfter(deadline: .now() + 10) { c.cancel() }
     }
 
     private func drop() {
