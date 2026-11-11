@@ -481,11 +481,19 @@ unsafe fn run(background: bool, direct: Option<(String, String)>) {
                 l.connected |= matches!(phase, Phase::Waiting | Phase::Live);
                 if phase == Phase::Ended {
                     captured = false;
-                    if l.connected {
+                    let rejected = l.session.rejected();
+                    if l.connected && !rejected {
                         retry = Some((now + Duration::from_millis(1200), l.target.clone(), l.title.clone()));
                     } else {
                         if !l.quiet {
                             st.error = Some((reason, started.elapsed().as_secs_f64()));
+                        }
+                        if let (true, Target::Net { host, port, .. }) = (rejected, &l.target) {
+                            // Trying the same code again would only be turned down again: forget it and ask.
+                            cfg.saved.retain(|s| !(s.host == *host && s.port == *port));
+                            cfg.save();
+                            let target = Target::Net { host: host.clone(), port: *port, code: String::new() };
+                            (st.prompt, st.prompt_code) = (Some(discover::Found { target, title: l.title.clone(), usb: false, info: None }), String::new());
                         }
                         video.clear();
                         if fullscreen {

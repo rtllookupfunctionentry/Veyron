@@ -85,7 +85,9 @@ impl Discovery {
                     // The stream's port is in the text record; the announcement's own is the status port's.
                     let port = svc.txt_properties.get_property_val_str("port").and_then(|p| p.parse().ok()).unwrap_or(svc.get_port());
                     let target = Target::Net { host: ip.to_string(), port, code: String::new() };
-                    seen.insert(svc.get_fullname().to_string(), Found { target, title: name, usb: false, info: None });
+                    // iOS gives apps "iPhone" for the device's name, so what tells phones apart is the Mac each runs.
+                    let info = session::status(&target);
+                    seen.insert(svc.get_fullname().to_string(), Found { target, title: name, usb: false, info });
                 }
                 mdns_sd::ServiceEvent::ServiceRemoved(_, fullname) => {
                     seen.remove(&fullname);

@@ -114,6 +114,9 @@ pub struct Session {
     sound: Mutex<Option<Conn>>,
     framed: AtomicBool,
     closed: AtomicBool,
+    /// Over a network, the phone took the connection and hung up before sending anything: the code was not
+    /// the one it shows (they change), or it has just turned a wrong one down, or Wi-Fi is not allowed there.
+    rejected: AtomicBool,
     gain: AtomicU32,
     frames: AtomicU32,
     wake: u32,
@@ -245,6 +248,7 @@ impl Session {
             sound: Mutex::default(),
             framed: AtomicBool::new(false),
             closed: AtomicBool::new(false),
+            rejected: AtomicBool::new(false),
             gain: AtomicU32::new(1f32.to_bits()),
             frames: AtomicU32::new(0),
             wake: opts.wake,
@@ -257,6 +261,7 @@ impl Session {
         std::thread::spawn(move || {
             let reason = match v.run_video(&opts) {
                 Ok(()) => "Veyron stopped sharing the screen.".to_string(),
+                Err(_) if v.rejected() => "The phone turned the connection down. Enter the code Veyron shows now: it changes each time sharing starts.".to_string(),
                 Err(e) => explain(&v.target, &e),
             };
             *v.phase.lock().unwrap() = (Phase::Ended, reason);
@@ -264,6 +269,10 @@ impl Session {
             v.wake();
         });
         s
+    }
+
+    pub fn rejected(&self) -> bool {
+        self.rejected.load(Ordering::Relaxed)
     }
 
     pub fn phase(&self) -> (Phase, String) {
@@ -362,7 +371,10 @@ impl Session {
         self.phase.lock().unwrap().0 = Phase::Waiting;
         self.wake();
         let mut first = [0u8; 1];
-        conn.read_exact(&mut first)?;
+        if let Err(e) = conn.read_exact(&mut first) {
+            self.rejected.store(matches!(self.target, Target::Net { .. }) && !self.closed.load(Ordering::Relaxed), Ordering::Relaxed);
+            return Err(e);
+        }
         self.phase.lock().unwrap().0 = Phase::Live;
         self.wake();
         if first[0] == 0 { self.read_raw(conn, opts) } else { self.read_framed(conn, first[0], opts) }
