@@ -1,6 +1,6 @@
 [package]
 name = "veyron-remote"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2024"
 description = "Shows the Mac that Veyron runs on an iPhone, and controls it"
 license = "GPL-2.0-or-later"
