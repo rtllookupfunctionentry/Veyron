@@ -35,6 +35,8 @@ Veyron is a fork of [Henge](https://github.com/Leviidev/Henge) by Leviidev. Heng
 - **Shut Down and Restart from the app's menu** — they press the Mac's power button, so macOS closes its apps first. Force Off stays for when macOS is stuck.
 - **A graphics fix for large meshes** — macOS's driver for the virtual GPU cuts the base vertex of an indexed draw to 16 bits, so meshes in a buffer of more than 65,536 vertices were drawn from the wrong ones. In Roblox that showed as spikes across the screen. Veyron's translator leaves the value whole. The match is against the driver in macOS 15.6.1.
 - **A pointer fix** — an app's own pointer image that comes without premultiplied colour no longer has white specks around it.
+- **Wallpapers that stay after a restart** — a picture of more than 64 MB keeps the list of its memory pages in two levels, and only one was read, so what the GPU drew of it never reached macOS. Every HEIC picture decodes through such a picture: the copy macOS saves of a wallpaper was black, and so were the desktop and the login screen after a restart.
+- **One problem report for one panic** — macOS clears a stored panic log with a discard, which the Mac's auxiliary disk now accepts. Without it, "Your computer was restarted because of a problem" came back at every start.
 - **Tools for looking into graphics** — a GPU inspector page (`tools/henge-inspect.py`) and a draw trace, both off unless switched on.
 - **A new look** — charcoal and silver, after Veyron's mark, on the phone and on the computer.
 
@@ -55,7 +57,9 @@ All of this is Henge's work, carried over:
 
 ## Install
 
-Veyron has no releases yet. Each change to `main` is built by GitHub Actions: open [Actions](https://github.com/rtllookupfunctionentry/Veyron/actions), choose the newest green **Build Veyron IPA** run, and download its artifact (GitHub asks you to be signed in, and keeps artifacts for 90 days). The file inside is still called `Henge.ipa`.
+Download the newest milestone from [Releases](https://github.com/rtllookupfunctionentry/Veyron/releases/latest): `Veyron-<version>.ipa`, or the `.tipa` for TrollStore.
+
+A milestone collects many changes, so `main` is usually ahead of the newest one. Every change to `main` is built by GitHub Actions: for the newest build, open [Actions](https://github.com/rtllookupfunctionentry/Veyron/actions), choose the newest green **Build Veyron IPA** run, and download its artifact (GitHub asks you to be signed in, and keeps artifacts for 90 days). The file inside is still called `Henge.ipa`.
 
 Sideload it with SideStore or AltStore, or install the `.tipa` with TrollStore or TrollStore Lite. iOS or iPadOS 17 or later, on an A14 or M1 chip or newer. iPad support comes from Henge, where it is new and has not run on a real iPad yet.
 
@@ -71,9 +75,9 @@ Then open the Install tab, pick macOS Sequoia 15.6.1, and keep Veyron open with 
 
 The desktop app, in [`remote/`](remote). It shows the Mac in a window and sends it the computer's mouse, keyboard and controller.
 
-**Get it.** From [Actions](https://github.com/rtllookupfunctionentry/Veyron/actions), the newest green **Build Veyron Remote** run has one artifact for each system.
+**Get it.** Each milestone in [Releases](https://github.com/rtllookupfunctionentry/Veyron/releases/latest) has a package for each system. For changes made since, the newest green **Build Veyron Remote** run in [Actions](https://github.com/rtllookupfunctionentry/Veyron/actions) has one artifact for each system.
 
-- **Linux:** unpack and run `install.sh` from the artifact, or build from source with `remote/install.sh`. Building needs Rust, SDL3 and FFmpeg with their development files. Phones on a cable need `usbmuxd` running. A tray icon needs `libayatana-appindicator`.
+- **Linux:** unpack and run `install.sh`. The package is built on Ubuntu 24.04 and uses the system's FFmpeg 6 (`libavcodec.so.60`) and glibc 2.38 or later; on a system with another FFmpeg, build from source with `remote/install.sh`, which needs Rust, SDL3 and FFmpeg with their development files. Phones on a cable need `usbmuxd` running. A tray icon needs `libayatana-appindicator`.
 - **Windows:** unpack and run `veyron-remote.exe`; FFmpeg's libraries come with it. Phones on a cable need Apple's device support, which comes with iTunes or the Apple Devices app.
 - **macOS:** `brew install ffmpeg sdl3` first.
 
@@ -104,6 +108,8 @@ Then a Henge folder in the Mac's home folder is the same folder as Files › Vey
 ## Known limits
 
 - Signing in to an Apple Account inside macOS fails with a verification error.
+- Rosetta cannot be installed in the Mac: macOS reports that the platform does not support it.
+- A wallpaper or login screen that went black under an earlier build stays black until the copies macOS saved are removed once. In Terminal inside the Mac: `rm -rf ~/Library/Containers/com.apple.wallpaper.agent/Data/Library/Caches/com.apple.wallpaper.caches/extension-*/*`, then `sudo rm -f /private/var/db/Wallpapers/*/Metadata.plist /private/var/db/Wallpapers/*/Wallpaper.png`, then `killall WallpaperAgent`.
 - Graphics are tested on macOS's own apps, Chrome, Firefox, VS Code, Discord and Roblox. Other apps may draw wrongly.
 - On macOS Sonoma, the login screen and the account picture can be green: choose the wallpaper again in System Settings › Wallpaper (another one, then yours) and the picture in Users & Groups. Switching to a dynamic wallpaper (such as Sonoma) can stop the screen updating. On Ventura, the Calendar icon in the Dock is missing its date.
 - For the first few minutes after you log in, macOS is busy starting up in the background, so apps open more slowly.
