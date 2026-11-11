@@ -100,8 +100,8 @@ pub fn hex(bytes: &[u8]) -> String {
 
 /// This computer's lasting private key: made the first time and kept in the settings folder, for its user only.
 pub fn identity() -> io::Result<[u8; 32]> {
-    let dir = dirs::config_dir().ok_or_else(|| io::Error::other("no settings folder"))?.join("veyron-remote");
-    let file = dir.join("identity");
+    let file = key_file()?;
+    let dir = file.parent().unwrap().to_path_buf();
     if let Ok(bytes) = std::fs::read(&file) {
         if let Ok(key) = <[u8; 32]>::try_from(bytes.as_slice()) {
             return Ok(key);
@@ -115,6 +115,19 @@ pub fn identity() -> io::Result<[u8; 32]> {
     std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
     options.open(&file)?.write_all(&key)?;
     Ok(key)
+}
+
+fn key_file() -> io::Result<std::path::PathBuf> {
+    Ok(dirs::config_dir().ok_or_else(|| io::Error::other("no settings folder"))?.join("veyron-remote").join("identity"))
+}
+
+/// Does away with this computer's key. The next connection makes a new one, which no phone knows: whoever
+/// holds a copy of the old one stays out once the phones have forgotten it.
+pub fn renew() -> io::Result<()> {
+    match std::fs::remove_file(key_file()?) {
+        Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
+        _ => Ok(()),
+    }
 }
 
 /// What `connect` leaves: the sealed connection, the phone's lasting public key, and the handshake's hash,
@@ -183,6 +196,18 @@ mod tests {
         let (binding, phone) = (noise.get_handshake_hash().to_vec(), noise.get_remote_static().unwrap().to_vec());
         let noise = Arc::new(noise.into_stateless_transport_mode().unwrap());
         Link { conn: Sealed { stream: Arc::new(stream), noise, sent: Arc::default(), opened: Arc::default() }, phone, binding }
+    }
+
+    /// Run by itself with XDG_CONFIG_HOME set to an empty folder: it replaces the key it finds.
+    #[test]
+    #[ignore]
+    fn a_new_key_is_another_key() {
+        let first = identity().unwrap();
+        assert_eq!(first, identity().unwrap(), "the key lasts");
+        renew().unwrap();
+        assert_ne!(first, identity().unwrap());
+        renew().unwrap();
+        renew().unwrap(); // with no key there, nothing to do
     }
 
     #[test]

@@ -58,6 +58,8 @@ pub struct State {
     /// With the seamless mouse: the part of the stream that is the app's own (the bar and the grip it opens
     /// from). The mouse stays with the app there and goes to the Mac everywhere else on the picture.
     pub ui_rect: Option<Rect>,
+    /// What came of asking for a new key, said in its row of the settings.
+    pub new_key: Option<String>,
 }
 
 fn body(size: f32) -> FontId {
@@ -622,6 +624,15 @@ pub fn settings(ctx: &Context, st: &mut State, cfg: &mut Config, protocol2: Opti
                 row(ui, "Paired phones", &format!("{phones} paired over the network"), phones > 0, |ui| {
                     if button(ui, "Forget", false).clicked() {
                         cfg.paired.clear();
+                    }
+                });
+                let hint = st.new_key.clone().unwrap_or("A new one has to be paired with every phone again".into());
+                row(ui, "This computer's key", &hint, true, |ui| {
+                    if button(ui, "New key", false).clicked() {
+                        st.new_key = Some(match crate::seal::renew() {
+                            Ok(()) => "Replaced. On the phone, forget this computer, then pair again".into(),
+                            Err(e) => format!("It could not be replaced ({e})"),
+                        });
                     }
                 });
                 row(ui, "Full screen on connecting", "", true, |ui| {
