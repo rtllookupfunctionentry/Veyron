@@ -20,6 +20,8 @@ xcodebuild -project Henge.xcodeproj -scheme Henge -configuration Release -sdk ip
     -derivedDataPath "$DD" CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build > "$DD.buildlog" 2>&1 || {
     # Never package what an older build left behind.
     grep -E "error:|BUILD" "$DD.buildlog" | sort -u
+    # A script phase that fails (make, hdiutil) says no "error:": what came before the failure, then.
+    grep -n -E "\*\*\* |Error [0-9]+|nonzero exit code|failed|No such file|not found" "$DD.buildlog" | grep -v "export " | tail -n 40
     echo "==> the build failed; nothing packaged" >&2
     exit 1
 }
