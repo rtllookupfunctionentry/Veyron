@@ -41,19 +41,19 @@ struct MacApp: Identifiable, Hashable {
         switch UInt32(kind) {
         case HENGE_TL_PROGRAM.rawValue:
             return ("Runs without macOS (experimental)",
-                    "A program without windows: Henge loads it into itself and runs it, with no Mac started.")
+                    "A program without windows: Veyron loads it into itself and runs it, with no Mac started.")
         case HENGE_TL_SWIFTUI.rawValue:
             return ("Not yet: a SwiftUI app",
-                    "iOS has the SwiftUI it calls, but starting it as an app inside Henge isn't done yet. It runs in a Mac.")
+                    "iOS has the SwiftUI it calls, but starting it as an app inside Veyron isn't done yet. It runs in a Mac.")
         case HENGE_TL_CATALYST.rawValue:
             return ("Not yet: a Mac Catalyst app",
-                    "It's built from an iPad app's code, so most of what it calls exists on iOS, but starting it inside Henge isn't done yet. It runs in a Mac.")
+                    "It's built from an iPad app's code, so most of what it calls exists on iOS, but starting it inside Veyron isn't done yet. It runs in a Mac.")
         case HENGE_TL_APPKIT.rawValue:
             return ("Experimental: an AppKit app",
-                    "It draws its windows with AppKit, which iOS doesn't have; Henge stands in its own. Made for browsers built on Chromium (Chromium, apps built with Electron or CEF); others may stop early.")
+                    "It draws its windows with AppKit, which iOS doesn't have; Veyron stands in its own. Made for browsers built on Chromium (Chromium, apps built with Electron or CEF); others may stop early.")
         default:
             return ("Intel only",
-                    "It has no Apple silicon code. A Mac with Rosetta runs it; Henge can't yet.")
+                    "It has no Apple silicon code. A Mac with Rosetta runs it; Veyron can't yet.")
         }
     }
 
@@ -153,7 +153,7 @@ struct MacAppsView: View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 0) {
-                    Text("Mac apps and programs run here through Henge's own translation layer, with no Mac started. Programs without windows run today; apps with windows are next. Experimental.")
+                    Text("Mac apps and programs run here through Veyron's own translation layer, with no Mac started. Programs without windows run today; apps with windows are next. Experimental.")
                         .font(.system(size: 14)).foregroundStyle(Desk.dim)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 4).padding(.bottom, 12)
@@ -163,7 +163,7 @@ struct MacAppsView: View {
                         VStack(spacing: 10) {
                             Image(systemName: "shippingbox").font(.system(size: 34)).foregroundStyle(Desk.faint)
                             Text("Nothing here yet").font(.system(size: 17, weight: .semibold))
-                            Text("Bring in a .dmg or an .app from Files, or try Henge's sample programs.")
+                            Text("Bring in a .dmg or an .app from Files, or try Veyron's sample programs.")
                                 .font(.system(size: 14)).foregroundStyle(Desk.dim).multilineTextAlignment(.center)
                         }
                         .padding(28).frame(maxWidth: .infinity).deskCard()
@@ -240,7 +240,7 @@ struct MacAppRunView: View {
                 if app.canRun {
                     Button(running ? "Running…" : "Run") { run() }
                         .buttonStyle(DeskButtonStyle()).disabled(running || (result == nil && henge_tl_ran_program() != 0)).padding(.top, 16)
-                    Text("Programs run inside Henge, one per launch. After one has run, quit Henge and open it again to run another or to start a Mac.")
+                    Text("Programs run inside Veyron, one per launch. After one has run, quit Veyron and open it again to run another or to start a Mac.")
                         .font(.system(size: 13)).foregroundStyle(Desk.dim).frame(maxWidth: .infinity, alignment: .leading).padding(.top, 8)
                     if result != nil || !output.isEmpty {
                         DeskHeading("Output")
@@ -256,7 +256,7 @@ struct MacAppRunView: View {
                 if app.canOpenWindowed {
                     Button("Open (experimental)") { showScreen = true }
                         .buttonStyle(DeskButtonStyle()).disabled(henge_tl_ran_program() != 0).padding(.top, 16)
-                    Text("It runs inside Henge, one app per launch, without a Mac. Tap to click, scroll with one finger, drag with two, hold for a right click; the keyboard button brings up the keyboard. Quit Henge (swipe it away) to stop it.")
+                    Text("It runs inside Veyron, one app per launch, without a Mac. Tap to click, scroll with one finger, drag with two, hold for a right click; the keyboard button brings up the keyboard. Quit Veyron (swipe it away) to stop it.")
                         .font(.system(size: 13)).foregroundStyle(Desk.dim).frame(maxWidth: .infinity, alignment: .leading).padding(.top, 8)
                 }
                 Button("Delete", role: .destructive) { confirmDelete = true }.padding(.top, 24)

@@ -126,13 +126,13 @@ struct SettingsView: View {
                 .listRowBackground(Desk.card)
                 Section("Instant Resume") {
                     Toggle("Resume where you left off", isOn: $instantResume)
-                    Text("When you leave Henge, the running Mac is saved to storage, and opening it again picks up where it was in a few seconds, even after iOS closes Henge. The save is about the size of the Mac's memory in use, compressed. The Mac pauses while Henge is in the background, so its sound stops. Experimental.")
+                    Text("When you leave Veyron, the running Mac is saved to storage, and opening it again picks up where it was in a few seconds, even after iOS closes Veyron. The save is about the size of the Mac's memory in use, compressed. The Mac pauses while Veyron is in the background, so its sound stops. Experimental.")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 .listRowBackground(Desk.card)
                 Section("Mac Apps") {
                     Toggle("Mac apps without macOS", isOn: $macApps)
-                    Text("Bring in a .dmg or an .app (the + button on Home) and run it inside Henge through its own translation layer, without starting a Mac. Programs without windows run today; apps with windows don't yet. Experimental.")
+                    Text("Bring in a .dmg or an .app (the + button on Home) and run it inside Veyron through its own translation layer, without starting a Mac. Programs without windows run today; apps with windows don't yet. Experimental.")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 .listRowBackground(Desk.card)
@@ -141,7 +141,7 @@ struct SettingsView: View {
                         ForEach(DeskAppearance.allCases) { Text($0.title).tag($0) }
                     }
                     .pickerStyle(.segmented)
-                    Text("System follows the \(Device.name)'s Light or Dark setting. Henge stays dark while a Mac is running.")
+                    Text("System follows the \(Device.name)'s Light or Dark setting. Veyron stays dark while a Mac is running.")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 .listRowBackground(Desk.card)
