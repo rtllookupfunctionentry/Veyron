@@ -16,11 +16,14 @@
   <a href="docs/architecture.md">How it works</a>
   ·
   <a href="#credit">Credit</a>
+  ·
+  <a href="https://discord.gg/urdq4KbCPA">Discord</a>
 </p>
 
 <p align="center">
   <a href="https://github.com/Leviidev/Henge"><img src="https://img.shields.io/badge/built%20on-Henge-CFCFD2?style=flat-square&labelColor=161617" alt="Built on Henge"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--2.0--or--later-CFCFD2?style=flat-square&labelColor=161617" alt="GPL-2.0-or-later"></a>
+  <a href="https://discord.gg/urdq4KbCPA"><img src="https://img.shields.io/badge/chat-Discord-CFCFD2?style=flat-square&labelColor=161617" alt="Veyron on Discord"></a>
 </p>
 
 Veyron is a fork of [Henge](https://github.com/Leviidev/Henge) by Leviidev. Henge runs macOS on an iPhone or iPad; Veyron keeps all of that and adds a way to use that Mac from a computer, with a desktop app of its own, plus a few fixes found along the way.
@@ -104,6 +107,10 @@ Pictures are decoded on the graphics card where FFmpeg can (VA-API, Vulkan, D3D1
 Do this once for each Mac: open Terminal on the Mac, then in Veyron open Details and tap **Type the Set Up Command**. Press Return on the Mac, and choose Allow when macOS asks about `henge-agent` and local networks. It needs the Mac's keyboard layout to be U.S.
 
 Then a Henge folder in the Mac's home folder is the same folder as Files › Veyron › Shared. What you copy on the Mac is copied on the device too, and the paste button pastes from the device into the Mac. The helper and the folder inside the Mac keep Henge's name.
+
+## Community
+
+Veyron has a [Discord server](https://discord.gg/urdq4KbCPA): announcements and releases, help, and a place to show what you run. Bug reports go there too, in `#bug-reports`, with the device and its iOS version, the macOS version in the Mac, the Veyron version, what happened, and the log (Files › Veyron › `henge.log` on the device).
 
 ## Known limits
 
