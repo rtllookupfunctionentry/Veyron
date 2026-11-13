@@ -107,8 +107,24 @@ static void stop_during_cpu_on(void) {
     hv_machine_free(&machine);
 }
 
+/* Which CPUs run a class higher for the host's fast cores (hv_fast_core_wanted) */
+static void fast_cores(void) {
+    const int load[4] = {900, 850, 400, 100}, none[4] = {0};
+    check("the busiest CPU is raised", hv_fast_core_wanted(load, none, 4, 0, 2));
+    check("and the second", hv_fast_core_wanted(load, none, 4, 1, 2));
+    check("the third is not", !hv_fast_core_wanted(load, none, 4, 2, 2));
+    check("an idle CPU is not, however few are busy", !hv_fast_core_wanted(load, none, 4, 3, 4));
+    const int close[3] = {800, 790, 760}, last_two[3] = {0, 1, 1};
+    check("as busy as each other: the first two", hv_fast_core_wanted(close, none, 3, 1, 2) && !hv_fast_core_wanted(close, none, 3, 2, 2));
+    check("a raised CPU stays while another is not a tenth ahead", hv_fast_core_wanted(close, last_two, 3, 2, 2));
+    check("and that other does not take its place", !hv_fast_core_wanted(close, last_two, 3, 0, 2));
+    const int ahead[3] = {900, 790, 760};
+    check("a tenth ahead, it does", hv_fast_core_wanted(ahead, last_two, 3, 0, 2) && !hv_fast_core_wanted(ahead, last_two, 3, 2, 2));
+}
+
 int main(void) {
     alarm(15);
+    fast_cores();
     for (int caller = 0; caller < 2; caller++) {
         power_request(0x84000008, caller);
         power_request(0x84000009, caller);

@@ -207,6 +207,11 @@ typedef struct HvPerCpu {
     uint32_t ijc_seq;            /* odd while it checks a block's mapping in its TLB and caches it (hv_ijc_fill_checked) */
     uint32_t thread;             /* its host thread (mach_port_t), for --stats: is a CPU waited for running at all */
     uint8_t phase;               /* for --stats, what a CPU others wait on is doing: HV_PHASE_* */
+    /* For the host's fast cores (dispatch.c, fast_core_rank): host ticks asleep in WFI; when the share of time
+       spent busy was last worked out and the ticks asleep then; that share in thousandths, averaged, which the
+       other CPUs read; whether this CPU runs a class higher for it, and the class it started in. */
+    uint64_t idle_ticks, rank_at, rank_idle;
+    int load, promoted, base_qos;
     HvTlbStash stash[HV_STASHES];
     uint64_t stash_clock;
 } HvPerCpu;
@@ -359,6 +364,7 @@ void hv_cpu_sync(HvCpu *self, HvCpu *target, uint64_t seq);
 /* The owner: do what other CPUs asked. */
 void hv_cpu_process_requests(HvCpu *cpu);
 void hv_cpu_ack_wake(HvCpu *cpu);
+int hv_fast_core_wanted(const int *load, const int *raised, int n, int me, int cores);
 void hv_big_lock(HvMachine *m);
 void hv_big_unlock(HvMachine *m);
 /* Let a waiting CPU run (the lock is held again on return). */

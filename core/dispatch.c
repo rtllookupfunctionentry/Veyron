@@ -2,7 +2,11 @@
 
 #include <mach/mach.h>
 #include <mach/mach_time.h>
+#include <TargetConditionals.h>
+#include <pthread/qos.h>
 #include <sched.h>
+#include <sys/resource.h>
+#include <sys/sysctl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <dlfcn.h>
@@ -14,6 +18,8 @@
 #include "mmu.h"
 #include "sysreg.h"
 #include "translate.h"
+
+extern int proc_pid_rusage(int pid, int flavor, rusage_info_t *buffer); /* libproc.h, which the iOS SDK leaves out */
 
 void hv_flush_blocks(HvMachine *m) {
     /* Every other CPU is parked (stop_the_world): the one moment the TLB layout can change. */
@@ -443,6 +449,64 @@ void hv_debug_el0_in_kernel(HvCpu *cpu, const char *what) {
     }
 }
 
+/* A phone has few fast cores and more slow ones (2 and 4 in an iPhone 17 Pro), and the guest's CPUs all ran in one
+   class: which of them had a fast core was chance, and a thread that never rests loses priority to ones that do. So
+   the busiest CPUs, as many as the host has fast cores, run a class higher, and the host gives them those first.
+   macOS keeps a thread that does not rest on the CPU it has, so in a game the busiest CPU is the one with its main
+   thread. HV_FAST_CORES: how many CPUs to raise (0: none; unset: the host's fast cores, where it has both kinds).
+
+   Should CPU `me` be one of them? It has to be busy at all (three tenths of the time), and fewer than `cores` others
+   may be ahead of it. One that is raised already counts as a tenth busier than it is, so two that are as busy as
+   each other do not keep changing places. */
+int hv_fast_core_wanted(const int *load, const int *raised, int n, int me, int cores) {
+    if (load[me] < 300) return 0;
+    int mine = load[me] + (raised[me] ? 100 : 0), ahead = 0;
+    for (int i = 0; i < n; i++) {
+        int its = load[i] + (raised[i] ? 100 : 0);
+        if (i != me && (its > mine || (its == mine && i < me))) ahead++;
+    }
+    return ahead < cores;
+}
+
+static void fast_core_rank(HvCpu *cpu, uint64_t now) {
+    HvPerCpu *p = cpu->pc_state;
+    HvMachine *m = cpu->m;
+    if (!p || now - p->rank_at < 6000000) return; /* four times a second */
+    static int cores = -1;
+    if (cores < 0) {
+        int n = 0;
+#if TARGET_OS_IPHONE
+        int32_t levels = 0, fast = 0;
+        size_t len = sizeof levels;
+        if (sysctlbyname("hw.nperflevels", &levels, &len, NULL, 0) == 0 && levels > 1) {
+            len = sizeof fast;
+            if (sysctlbyname("hw.perflevel0.logicalcpu", &fast, &len, NULL, 0) == 0) n = fast;
+        }
+#endif
+        if (getenv("HV_FAST_CORES")) n = atoi(getenv("HV_FAST_CORES"));
+        if (n >= m->ncpus) n = 0; /* a fast core for every CPU: nothing to choose */
+        if (n > 0) fprintf(stderr, "hengevm: fast cores: the %d busiest of %d CPUs run a class higher\n", n, m->ncpus);
+        cores = n > 0 ? n : 0;
+    }
+    uint64_t span = now - p->rank_at, idle = p->idle_ticks - p->rank_idle;
+    int first = !p->rank_at;
+    p->rank_at = now;
+    p->rank_idle = p->idle_ticks;
+    if (first) p->base_qos = (int)qos_class_self();
+    if (!cores || first || p->base_qos >= (int)QOS_CLASS_USER_INTERACTIVE) return;
+    int busy = idle >= span ? 0 : (int)(1000 - idle * 1000 / span);
+    __atomic_store_n(&p->load, (p->load + busy) / 2, __ATOMIC_RELAXED);
+    int load[HV_MAX_CPUS], raised[HV_MAX_CPUS];
+    for (int i = 0; i < m->ncpus; i++) {
+        load[i] = __atomic_load_n(&m->percpu[i].load, __ATOMIC_RELAXED);
+        raised[i] = __atomic_load_n(&m->percpu[i].promoted, __ATOMIC_RELAXED);
+    }
+    int want = hv_fast_core_wanted(load, raised, m->ncpus, (int)cpu->index, cores);
+    if (want == p->promoted) return;
+    __atomic_store_n(&p->promoted, want, __ATOMIC_RELAXED);
+    pthread_set_qos_class_self_np(want ? QOS_CLASS_USER_INTERACTIVE : (qos_class_t)p->base_qos, 0);
+}
+
 /* WFI: sleep until an interrupt is pending (masked or not) or the next timer
    event, at most 10 ms. WFI may complete early, so the guest just runs again
    if nothing happened. */
@@ -491,7 +555,10 @@ static int wait_for_interrupt(HvCpu *cpu) {
     unpark(cpu);
     hv_big_lock(m);
     m->stats.wfi++;
-    m->stats.wfi_ticks += mach_absolute_time() - t0;
+    uint64_t t1 = mach_absolute_time();
+    m->stats.wfi_ticks += t1 - t0;
+    p->idle_ticks += t1 - t0;
+    fast_core_rank(cpu, t1); /* a CPU that sleeps a lot is seldom kicked while it runs */
     m->tick(m, cpu);
     return 0;
 }
@@ -620,9 +687,18 @@ static void print_stats(HvCpu *cpu, int force) {
                 fprintf(stderr, "  cpus:");
                 for (int i = 0; i < m->ncpus; i++)
                     if (m->cpus[i])
-                        fprintf(stderr, " [%d] %s el%u pc %llx", i, m->cpus[i]->off ? "off" : "on", m->cpus[i]->el,
-                                (unsigned long long)m->cpus[i]->pc);
+                        fprintf(stderr, " [%d] %s el%u pc %llx busy %d%%%s", i, m->cpus[i]->off ? "off" : "on", m->cpus[i]->el,
+                                (unsigned long long)m->cpus[i]->pc, m->percpu[i].load / 10, m->percpu[i].promoted ? " (raised)" : "");
                 fprintf(stderr, "\n");
+            }
+            /* How much of the app's CPU time was on the host's fast cores (0 where it has one kind) */
+            struct rusage_info_v6 ru;
+            if (proc_pid_rusage(getpid(), RUSAGE_INFO_V6, (rusage_info_t *)&ru) == 0) {
+                static uint64_t last_all, last_fast;
+                uint64_t all = ru.ri_user_time + ru.ri_system_time, fast = ru.ri_user_ptime + ru.ri_system_ptime;
+                if (all > last_all) fprintf(stderr, "  on fast cores: %.0f%% of the app's CPU time\n", 100.0 * (double)(fast - last_fast) / (double)(all - last_all));
+                last_all = all;
+                last_fast = fast;
             }
             last_busy = busy;
         }
@@ -957,6 +1033,7 @@ static int run_loop(HvCpu *cpu, int one) {
         }
         /* Someone asked the CPU to leave (the 1 ms kicker, a device, an invalidation): service devices now. */
         int kicked = __atomic_exchange_n(&cpu->exit_req, 0, __ATOMIC_RELAXED) != 0;
+        if (kicked) fast_core_rank(cpu, mach_absolute_time()); /* a thousand times a second at most (the kicker) */
         if (kicked && m->big_lock_on) {
             /* Give another CPU its turn. Whatever it does in between may touch
                what this CPU's exclusive monitor watches, so the monitor clears. */
