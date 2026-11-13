@@ -18,9 +18,13 @@ enum EngineTuning {
         "HV_STATS": "10",      // seconds between engine stats lines in the log; 0 = off
     ]
 
-    static func apply() {
+    static func apply(osName: String? = nil) {
         var env = defaults
         let d = UserDefaults.standard
+        // The display's refresh time and event (devices/pvg_lite.c, vblank) are macOS 15's driver's: without them
+        // WindowServer's display timer re-arms at once. macOS 27's driver reads the same places differently and its
+        // desktop stalls, and 14 and 26 are unchecked: so for a Mac installed as Sequoia only.
+        if osName?.contains("Sequoia") == true { env["HV_PVG_VBLANK"] = "1" } else { unsetenv("HV_PVG_VBLANK") }
         if [30, 120].contains(d.integer(forKey: refreshKey)) { env["HV_HZ"] = String(d.integer(forKey: refreshKey)) }
         if d.bool(forKey: superblocksKey) { env["HV_SUPERBLOCKS"] = "1" } else { unsetenv("HV_SUPERBLOCKS") }
         if d.bool(forKey: wfiSpinKey) { env["HV_WFI_SPIN"] = "50" }
