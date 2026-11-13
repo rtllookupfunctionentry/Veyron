@@ -22,6 +22,8 @@ xcodebuild -project Henge.xcodeproj -scheme Henge -configuration Release -sdk ip
     grep -E "error:|BUILD" "$DD.buildlog" | sort -u
     # A script phase that fails (make, hdiutil) says no "error:": what came before the failure, then.
     grep -n -E "\*\*\* |Error [0-9]+|nonzero exit code|failed|No such file|not found" "$DD.buildlog" | grep -v "export " | tail -n 40
+    # And what the failing make rule itself printed: twice the samples' disk image failed with nothing above to say why.
+    grep -B 15 -E "^make: \*\*\* " "$DD.buildlog" | grep -v "export " | tail -n 40
     echo "==> the build failed; nothing packaged" >&2
     exit 1
 }
