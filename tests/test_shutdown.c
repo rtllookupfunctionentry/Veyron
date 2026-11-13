@@ -107,19 +107,28 @@ static void stop_during_cpu_on(void) {
     hv_machine_free(&machine);
 }
 
-/* Which CPUs run a class higher for the host's fast cores (hv_fast_core_wanted) */
+/* Which of the guest's threads get the host's fast cores (hv_hot_sample, hv_hot_rank, hv_hot_is) */
 static void fast_cores(void) {
-    const int load[4] = {900, 850, 400, 100}, none[4] = {0};
-    check("the busiest CPU is raised", hv_fast_core_wanted(load, none, 4, 0, 2));
-    check("and the second", hv_fast_core_wanted(load, none, 4, 1, 2));
-    check("the third is not", !hv_fast_core_wanted(load, none, 4, 2, 2));
-    check("an idle CPU is not, however few are busy", !hv_fast_core_wanted(load, none, 4, 3, 4));
-    const int close[3] = {800, 790, 760}, last_two[3] = {0, 1, 1};
-    check("as busy as each other: the first two", hv_fast_core_wanted(close, none, 3, 1, 2) && !hv_fast_core_wanted(close, none, 3, 2, 2));
-    check("a raised CPU stays while another is not a tenth ahead", hv_fast_core_wanted(close, last_two, 3, 2, 2));
-    check("and that other does not take its place", !hv_fast_core_wanted(close, last_two, 3, 0, 2));
-    const int ahead[3] = {900, 790, 760};
-    check("a tenth ahead, it does", hv_fast_core_wanted(ahead, last_two, 3, 0, 2) && !hv_fast_core_wanted(ahead, last_two, 3, 2, 2));
+    static HvHot h;
+    for (int i = 0; i < 200; i++) {
+        hv_hot_sample(&h, 0xa000);
+        if (i % 2) hv_hot_sample(&h, 0xb000);
+        if (i % 4 == 0) hv_hot_sample(&h, 0xc000);
+        hv_hot_sample(&h, 0x100000 + (uint64_t)i); /* a crowd of threads seen once each, more than the table holds */
+        if (i == 150) hv_hot_sample(&h, 0xd000); /* and one seen once in the middle of them */
+    }
+    hv_hot_sample(&h, 0);
+    hv_hot_rank(&h, 2);
+    check("the two threads seen most are chosen", hv_hot_is(&h, 0xa000) && hv_hot_is(&h, 0xb000));
+    check("the third is not, nor one of the crowd, nor no thread", !hv_hot_is(&h, 0xc000) && !hv_hot_is(&h, 0x100000 + 199) && !hv_hot_is(&h, 0));
+    for (int i = 0; i < 60; i++) hv_hot_sample(&h, 0xc000); /* c: 25 left + 60, b: 50 left + its eighth */
+    hv_hot_rank(&h, 2);
+    check("a busier thread takes the place of the lesser of the two", hv_hot_is(&h, 0xa000) && hv_hot_is(&h, 0xc000) && !hv_hot_is(&h, 0xb000));
+    for (int i = 0; i < 4; i++) hv_hot_sample(&h, 0xb000); /* b: 25 left + 4, c: 42 left: within an eighth? no, b is behind */
+    hv_hot_rank(&h, 2);
+    check("one chosen stays while the other is not ahead of it", hv_hot_is(&h, 0xc000) && !hv_hot_is(&h, 0xb000));
+    for (int r = 0; r < 8; r++) hv_hot_rank(&h, 2);
+    check("threads no longer seen are dropped", !hv_hot_is(&h, 0xa000) && !hv_hot_is(&h, 0xc000));
 }
 
 int main(void) {

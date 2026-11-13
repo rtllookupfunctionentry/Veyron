@@ -277,7 +277,7 @@ void hv_cpu_sync(HvCpu *self, HvCpu *target, uint64_t seq) {
             __atomic_sub_fetch(&t->ack_waiters, 1, __ATOMIC_SEQ_CST);
         } else if (spins > 200) {
             /* The core goes to the CPU waited for, if it has none. sched_yield() only gives way to threads of this
-               one's priority or above, and the busiest CPUs run a class higher than the rest (fast_core_rank):
+               one's priority or above, and a CPU with a busy thread on it runs a class higher (fast_core_tick):
                one of those would spin here keeping a lower one it waits for off the cores. */
             thread_switch(t->thread, SWITCH_OPTION_DEPRESS, 1);
         }

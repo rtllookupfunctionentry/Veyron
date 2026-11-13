@@ -450,28 +450,77 @@ void hv_debug_el0_in_kernel(HvCpu *cpu, const char *what) {
 }
 
 /* A phone has few fast cores and more slow ones (2 and 4 in an iPhone 17 Pro), and the guest's CPUs all ran in one
-   class: which of them had a fast core was chance, and a thread that never rests loses priority to ones that do. So
-   the busiest CPUs, as many as the host has fast cores, run a class higher, and the host gives them those first.
-   macOS keeps a thread that does not rest on the CPU it has, so in a game the busiest CPU is the one with its main
-   thread. HV_FAST_CORES: how many CPUs to raise (0: none; unset: the host's fast cores, where it has both kinds).
+   class: which of them had a fast core was chance. The guest cannot be told which of its CPUs are fast (its kernel
+   is built for one kind), and in a game all of them are about as busy as each other, so raising the busiest CPUs
+   was chance too: a game ran at 35-53 frames a second when its main thread was on a raised CPU and at 23 when not.
+   So it is the guest's threads that are ranked: the ones on a CPU most often, as many as the host has fast cores,
+   and a CPU runs a class higher while one of them is on it. A thread is known by TPIDR_EL1, which is where XNU
+   keeps the current thread. HV_FAST_CORES: how many threads (0: none; unset: the host's fast cores, where it has
+   both kinds).
 
-   Should CPU `me` be one of them? It has to be busy at all (three tenths of the time), and fewer than `cores` others
-   may be ahead of it. One that is raised already counts as a tenth busier than it is, so two that are as busy as
-   each other do not keep changing places. */
-int hv_fast_core_wanted(const int *load, const int *raised, int n, int me, int cores) {
-    if (load[me] < 300) return 0;
-    int mine = load[me] + (raised[me] ? 100 : 0), ahead = 0;
-    for (int i = 0; i < n; i++) {
-        int its = load[i] + (raised[i] ? 100 : 0);
-        if (i != me && (its > mine || (its == mine && i < me))) ahead++;
+   Thread `id` was on a CPU just now. A thread not in the table takes the place of the one seen least and inherits
+   its count (Space-Saving), so that a busy newcomer is not pushed out again before it has been seen twice. */
+void hv_hot_sample(HvHot *h, uint64_t id) {
+    if (!id) return;
+    int least = 0;
+    for (int i = 0; i < HV_HOT_SLOTS; i++) {
+        if (h->id[i] == id) {
+            h->n[i]++;
+            return;
+        }
+        if (h->n[i] < h->n[least]) least = i;
     }
-    return ahead < cores;
+    h->id[least] = id;
+    h->n[least]++;
 }
 
-static void fast_core_rank(HvCpu *cpu, uint64_t now) {
+int hv_hot_is(const HvHot *h, uint64_t id) {
+    for (int k = 0; k < HV_HOT_MAX; k++)
+        if (h->top[k] == id) return id != 0;
+    return 0;
+}
+
+/* Choose the `cores` threads seen most, then halve every count so that the past fades. One chosen already counts
+   as an eighth more than it is, so two that are as busy as each other do not keep changing places; one seen fewer
+   than 16 times is seldom on a CPU and needs no fast core. */
+void hv_hot_rank(HvHot *h, int cores) {
+    uint64_t top[HV_HOT_MAX] = {0};
+    for (int k = 0; k < cores && k < HV_HOT_MAX; k++) {
+        uint32_t best = 15;
+        for (int i = 0; i < HV_HOT_SLOTS; i++) {
+            uint32_t score = h->n[i] + (hv_hot_is(h, h->id[i]) ? h->n[i] / 8 : 0);
+            int taken = 0;
+            for (int j = 0; j < k; j++) taken |= top[j] == h->id[i];
+            if (h->id[i] && !taken && score > best) best = score, top[k] = h->id[i];
+        }
+        if (!top[k]) break;
+    }
+    memcpy(h->top, top, sizeof top);
+    for (int i = 0; i < HV_HOT_SLOTS; i++) h->n[i] /= 2;
+}
+
+/* For --stats: the share of its time this CPU was not asleep in WFI, in thousandths, averaged; four times a second. */
+static void cpu_load(HvPerCpu *p, uint64_t now) {
+    if (now - p->rank_at < 6000000) return;
+    uint64_t span = now - p->rank_at, idle = p->idle_ticks - p->rank_idle;
+    int first = !p->rank_at;
+    p->rank_at = now;
+    p->rank_idle = p->idle_ticks;
+    if (first) return;
+    int busy = idle >= span ? 0 : (int)(1000 - idle * 1000 / span);
+    __atomic_store_n(&p->load, (p->load + busy) / 2, __ATOMIC_RELAXED);
+}
+
+static uint32_t class_changes; /* for --stats */
+
+/* From the run loop when the CPU was asked to leave translated code, which the kicker does every millisecond. */
+static void fast_core_tick(HvCpu *cpu, uint64_t now) {
     HvPerCpu *p = cpu->pc_state;
     HvMachine *m = cpu->m;
-    if (!p || now - p->rank_at < 6000000) return; /* four times a second */
+    if (!p) return;
+    cpu_load(p, now);
+    if (now - p->hot_at < 24000) return; /* a thousand times a second: other things ask a CPU to leave far more often */
+    p->hot_at = now;
     static int cores = -1;
     if (cores < 0) {
         int n = 0;
@@ -485,25 +534,28 @@ static void fast_core_rank(HvCpu *cpu, uint64_t now) {
 #endif
         if (getenv("HV_FAST_CORES")) n = atoi(getenv("HV_FAST_CORES"));
         if (n >= m->ncpus) n = 0; /* a fast core for every CPU: nothing to choose */
-        if (n > 0) fprintf(stderr, "hengevm: fast cores: the %d busiest of %d CPUs run a class higher\n", n, m->ncpus);
+        if (n > HV_HOT_MAX) n = HV_HOT_MAX;
+        if (n > 0) fprintf(stderr, "hengevm: fast cores: a CPU runs a class higher while one of the %d busiest threads is on it\n", n);
         cores = n > 0 ? n : 0;
     }
-    uint64_t span = now - p->rank_at, idle = p->idle_ticks - p->rank_idle;
-    int first = !p->rank_at;
-    p->rank_at = now;
-    p->rank_idle = p->idle_ticks;
-    if (first) p->base_qos = (int)qos_class_self();
-    if (!cores || first || p->base_qos >= (int)QOS_CLASS_USER_INTERACTIVE) return;
-    int busy = idle >= span ? 0 : (int)(1000 - idle * 1000 / span);
-    __atomic_store_n(&p->load, (p->load + busy) / 2, __ATOMIC_RELAXED);
-    int load[HV_MAX_CPUS], raised[HV_MAX_CPUS];
-    for (int i = 0; i < m->ncpus; i++) {
-        load[i] = __atomic_load_n(&m->percpu[i].load, __ATOMIC_RELAXED);
-        raised[i] = __atomic_load_n(&m->percpu[i].promoted, __ATOMIC_RELAXED);
+    if (!p->base_qos) p->base_qos = (int)qos_class_self();
+    if (!cores || !p->base_qos || p->base_qos >= (int)QOS_CLASS_USER_INTERACTIVE) return;
+    HvHot *h = &m->hot;
+    if (__atomic_exchange_n(&h->lock, 1, __ATOMIC_ACQUIRE)) return; /* another CPU is at it: the next tick will do */
+    hv_hot_sample(h, cpu->tpidr_el1);
+    if (now - h->ranked_at >= 6000000) { /* four times a second */
+        h->ranked_at = now;
+        hv_hot_rank(h, cores);
     }
-    int want = hv_fast_core_wanted(load, raised, m->ncpus, (int)cpu->index, cores);
+    int hot = hv_hot_is(h, cpu->tpidr_el1);
+    __atomic_store_n(&h->lock, 0, __ATOMIC_RELEASE);
+    /* The guest switches threads many times a millisecond: a CPU stays raised until four ticks in a row found
+       another thread on it, or it would change class, a system call, at nearly every tick. */
+    p->cold = hot ? 0 : p->cold + 1;
+    int want = hot || (p->promoted && p->cold < 4);
     if (want == p->promoted) return;
     __atomic_store_n(&p->promoted, want, __ATOMIC_RELAXED);
+    __atomic_add_fetch(&class_changes, 1, __ATOMIC_RELAXED);
     pthread_set_qos_class_self_np(want ? QOS_CLASS_USER_INTERACTIVE : (qos_class_t)p->base_qos, 0);
 }
 
@@ -558,7 +610,7 @@ static int wait_for_interrupt(HvCpu *cpu) {
     uint64_t t1 = mach_absolute_time();
     m->stats.wfi_ticks += t1 - t0;
     p->idle_ticks += t1 - t0;
-    fast_core_rank(cpu, t1); /* a CPU that sleeps a lot is seldom kicked while it runs */
+    cpu_load(p, t1); /* a CPU that sleeps a lot is seldom kicked while it runs */
     m->tick(m, cpu);
     return 0;
 }
@@ -696,7 +748,14 @@ static void print_stats(HvCpu *cpu, int force) {
             if (proc_pid_rusage(getpid(), RUSAGE_INFO_V6, (rusage_info_t *)&ru) == 0) {
                 static uint64_t last_all, last_fast;
                 uint64_t all = ru.ri_user_time + ru.ri_system_time, fast = ru.ri_user_ptime + ru.ri_system_ptime;
-                if (all > last_all) fprintf(stderr, "  on fast cores: %.0f%% of the app's CPU time\n", 100.0 * (double)(fast - last_fast) / (double)(all - last_all));
+                if (all > last_all) fprintf(stderr, "  on fast cores: %.0f%% of the app's CPU time;", 100.0 * (double)(fast - last_fast) / (double)(all - last_all));
+                /* The threads chosen for them, how often each was seen on a CPU lately (about 500: all the time),
+                   and how many times CPUs changed class since the last report. Read as they change: a report. */
+                fprintf(stderr, " busiest threads:");
+                for (int k = 0; k < HV_HOT_MAX; k++)
+                    for (int i = 0; i < HV_HOT_SLOTS && m->hot.top[k]; i++)
+                        if (m->hot.id[i] == m->hot.top[k]) fprintf(stderr, " %llx (%u)", (unsigned long long)m->hot.top[k], m->hot.n[i] * 2);
+                fprintf(stderr, "; class changes %u\n", __atomic_exchange_n(&class_changes, 0, __ATOMIC_RELAXED));
                 last_all = all;
                 last_fast = fast;
             }
@@ -1033,7 +1092,7 @@ static int run_loop(HvCpu *cpu, int one) {
         }
         /* Someone asked the CPU to leave (the 1 ms kicker, a device, an invalidation): service devices now. */
         int kicked = __atomic_exchange_n(&cpu->exit_req, 0, __ATOMIC_RELAXED) != 0;
-        if (kicked) fast_core_rank(cpu, mach_absolute_time()); /* a thousand times a second at most (the kicker) */
+        if (kicked) fast_core_tick(cpu, mach_absolute_time());
         if (kicked && m->big_lock_on) {
             /* Give another CPU its turn. Whatever it does in between may touch
                what this CPU's exclusive monitor watches, so the monitor clears. */

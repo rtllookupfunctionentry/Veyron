@@ -207,11 +207,12 @@ typedef struct HvPerCpu {
     uint32_t ijc_seq;            /* odd while it checks a block's mapping in its TLB and caches it (hv_ijc_fill_checked) */
     uint32_t thread;             /* its host thread (mach_port_t), for --stats: is a CPU waited for running at all */
     uint8_t phase;               /* for --stats, what a CPU others wait on is doing: HV_PHASE_* */
-    /* For the host's fast cores (dispatch.c, fast_core_rank): host ticks asleep in WFI; when the share of time
-       spent busy was last worked out and the ticks asleep then; that share in thousandths, averaged, which the
-       other CPUs read; whether this CPU runs a class higher for it, and the class it started in. */
-    uint64_t idle_ticks, rank_at, rank_idle;
-    int load, promoted, base_qos;
+    /* For --stats and the host's fast cores (dispatch.c, cpu_load and fast_core_tick): host ticks asleep in WFI;
+       when the share of time spent busy was last worked out and the ticks asleep then; that share in thousandths,
+       averaged; when this CPU last looked at which thread it runs; whether it runs a class higher for it, how
+       many looks in a row found a thread that needs none, and the class it started in. */
+    uint64_t idle_ticks, rank_at, rank_idle, hot_at;
+    int load, promoted, cold, base_qos;
     HvTlbStash stash[HV_STASHES];
     uint64_t stash_clock;
 } HvPerCpu;
@@ -219,6 +220,16 @@ typedef struct HvPerCpu {
 enum { HV_PHASE_RUN, HV_PHASE_TRANSLATE, HV_PHASE_HELPER, HV_PHASE_SYNC, HV_PHASE_FLUSH };
 #define HV_REQ_TLB_ALL 1u   /* drop the whole TLB and branch cache */
 #define HV_REQ_IJC_RESET 2u /* drop the branch cache (code changed) */
+
+/* The guest's threads that are on a CPU most (dispatch.c, fast_core_tick): each by its TPIDR_EL1, how often it
+   was seen there lately, and the ones chosen for the host's fast cores (0: none). */
+#define HV_HOT_SLOTS 64
+#define HV_HOT_MAX 4
+typedef struct HvHot {
+    uint64_t id[HV_HOT_SLOTS], top[HV_HOT_MAX], ranked_at;
+    uint32_t n[HV_HOT_SLOTS];
+    int lock;
+} HvHot;
 
 typedef struct HvMachine {
     int locks_initialized;
@@ -275,6 +286,7 @@ typedef struct HvMachine {
     HvCpu *cpus[HV_MAX_CPUS]; /* every CPU, so device and invalidation code can ask them to leave */
     int ncpus;
     HvPerCpu percpu[HV_MAX_CPUS];
+    HvHot hot;
     /* With more than one CPU, only the holder of this runs guest code (a fair
        ticket lock, handed over at every kick and while a CPU sleeps). */
     int big_lock_on;
@@ -364,7 +376,9 @@ void hv_cpu_sync(HvCpu *self, HvCpu *target, uint64_t seq);
 /* The owner: do what other CPUs asked. */
 void hv_cpu_process_requests(HvCpu *cpu);
 void hv_cpu_ack_wake(HvCpu *cpu);
-int hv_fast_core_wanted(const int *load, const int *raised, int n, int me, int cores);
+void hv_hot_sample(HvHot *h, uint64_t id);
+void hv_hot_rank(HvHot *h, int cores);
+int hv_hot_is(const HvHot *h, uint64_t id);
 void hv_big_lock(HvMachine *m);
 void hv_big_unlock(HvMachine *m);
 /* Let a waiting CPU run (the lock is held again on return). */
