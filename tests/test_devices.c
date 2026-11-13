@@ -117,6 +117,17 @@ static void test_gic(void) {
     m.icc_write(&m, &cpu, ICC_SGI1R, 5ull << 24 | 1);
     check("SGI to self", m.icc_read(&m, &cpu, ICC_IAR1), 5);
     m.icc_write(&m, &cpu, ICC_EOIR1, 5);
+    /* SGI 6 to a second CPU: its line rises and the sender's stays (each CPU's lines are worked out on their own) */
+    int had = m.ncpus;
+    m.ncpus = 2;
+    g->cpu[1].enabled[6] = 1, g->cpu[1].group[6] = 1, g->cpu[1].igrpen1 = 1, g->cpu[1].pmr = 0xff;
+    m.icc_write(&m, &cpu, ICC_SGI1R, 6ull << 24 | 2);
+    check("SGI to another CPU raises its line", m.percpu[1].irq_line, 1);
+    check("and not the sender's", m.percpu[0].irq_line, 0);
+    g->cpu[1].latch[6] = 0;
+    hv_gicv3_update(g);
+    check("and it drops when the interrupt is gone", m.percpu[1].irq_line, 0);
+    m.ncpus = had;
     check("ICENABLER1 clears", (wr32(VMAPPLE_GIC_DIST + 0x184, 6), rd32(VMAPPLE_GIC_DIST + 0x104) & 6), 0);
 }
 

@@ -74,16 +74,28 @@ static int hppi(HvGic *g, int c, int masked) {
     return best;
 }
 
+/* CPU c's two lines, from what is pending for it. What one CPU does at its own interface (acknowledge, end, its
+   priority mask, its own timer) changes what is pending for that CPU alone, so only its lines are worked out again:
+   doing every CPU's each time, as before, held the lock six times as long on a six-CPU Mac, at each of the four
+   steps of each of the 38 thousand interrupts a second a game takes. */
+static void update_cpu(HvGic *g, int c) {
+    int i = hppi(g, c, 1);
+    HvPerCpu *p = &g->m->percpu[c];
+    int irq = i != SPURIOUS && F(g, c, group, i) == 1, fiq = i != SPURIOUS && F(g, c, group, i) == 0;
+    int raised = (irq && !p->irq_line) || (fiq && !p->fiq_line);
+    p->irq_line = irq;
+    p->fiq_line = fiq;
+    if (raised && g->m->cpus[c] && g->m->ncpus > 1) hv_cpu_wake(g->m->cpus[c]); /* it may be asleep in WFI, or running */
+}
+
 static void hv_gicv3_update_body(HvGic *g) {
-    for (int c = 0; c < ncpus(g); c++) {
-        int i = hppi(g, c, 1);
-        HvPerCpu *p = &g->m->percpu[c];
-        int irq = i != SPURIOUS && F(g, c, group, i) == 1, fiq = i != SPURIOUS && F(g, c, group, i) == 0;
-        int raised = (irq && !p->irq_line) || (fiq && !p->fiq_line);
-        p->irq_line = irq;
-        p->fiq_line = fiq;
-        if (raised && g->m->cpus[c] && g->m->ncpus > 1) hv_cpu_wake(g->m->cpus[c]); /* it may be asleep in WFI, or running */
-    }
+    for (int c = 0; c < ncpus(g); c++) update_cpu(g, c);
+}
+
+/* After CPU c's interface changed interrupt i: an SPI sent to another CPU since it was acknowledged is that one's too. */
+static void update_after(HvGic *g, int c, int i) {
+    if (i >= 32 && i < HV_GIC_NUM_IRQS && target_of(g, i) != c) hv_gicv3_update(g);
+    else update_cpu(g, c);
 }
 
 static void hv_gicv3_set_irq_body(HvGic *g, int intid, int level) {
@@ -102,7 +114,7 @@ static void hv_gicv3_set_ppi_body(HvGic *g, int c, int intid, int level) {
     if (k->level[intid] == level) return; /* the timer re-asserts every tick */
     if (k->edge[intid] && level) k->latch[intid] = 1;
     k->level[intid] = (uint8_t)level;
-    hv_gicv3_update(g);
+    if (c < ncpus(g)) update_cpu(g, c);
 }
 
 static void hv_gicv3_pend_body(HvGic *g, int intid) {
@@ -120,7 +132,7 @@ static uint64_t acknowledge(HvGic *g, int c, int grp) {
     F(g, c, latch, i) = 0;
     HvGicCpu *k = &g->cpu[c];
     if (k->depth < 32) k->stack[k->depth++] = (HvGicActive){(uint16_t)i, F(g, c, priority, i), (uint8_t)grp};
-    hv_gicv3_update(g);
+    update_cpu(g, c); /* hppi only names what is routed to c */
     return (uint64_t)i;
 }
 
@@ -129,7 +141,7 @@ static void end_of_interrupt(HvGic *g, int c, int intid) {
     HvGicCpu *k = &g->cpu[c];
     if (k->depth) k->depth--; /* priority drop: the most recent acknowledge */
     if (!(k->icc_ctlr & 2)) F(g, c, active, intid) = 0; /* EOImode 0 also deactivates */
-    hv_gicv3_update(g);
+    update_after(g, c, intid);
 }
 
 static uint64_t icc_read_body(HvMachine *m, HvCpu *cpu, uint32_t reg) {
@@ -166,10 +178,11 @@ static void icc_write_body(HvMachine *m, HvCpu *cpu, uint32_t reg, uint64_t v) {
     HvGicCpu *k = &g->cpu[c];
     switch (reg) {
     case R(3, 0, 4, 6, 0): k->pmr = v & 0xff; break;
-    case R(3, 0, 12, 12, 1): case R(3, 0, 12, 8, 1): end_of_interrupt(g, c, (int)(v & 0xffffff)); break; /* EOIR1/0 */
+    case R(3, 0, 12, 12, 1): case R(3, 0, 12, 8, 1): end_of_interrupt(g, c, (int)(v & 0xffffff)); return; /* EOIR1/0 */
     case R(3, 0, 12, 11, 1):                                           /* DIR */
         if ((v & 0xffffff) < HV_GIC_NUM_IRQS) F(g, c, active, (int)(v & 0xffffff)) = 0;
-        break;
+        update_after(g, c, (int)(v & 0xffffff));
+        return;
     case R(3, 0, 12, 8, 3): k->bpr0 = v & 7; break;
     case R(3, 0, 12, 12, 3): k->bpr1 = v & 7; break;
     case R(3, 0, 12, 12, 4): k->icc_ctlr = v & 3; break;              /* CBPR, EOImode */
@@ -185,13 +198,13 @@ static void icc_write_body(HvMachine *m, HvCpu *cpu, uint32_t reg, uint64_t v) {
         for (int t = 0; t < ncpus(g); t++) {
             uint64_t mp = m->cpus[t] ? m->cpus[t]->mpidr & 0xffffff : (uint64_t)t;
             int hit = irm ? t != c : aff == (mp >> 8) && rs == (mp & 0xff) >> 4 && ((v >> (mp & 0xf)) & 1);
-            if (hit) g->cpu[t].latch[intid] = 1;
+            if (hit) g->cpu[t].latch[intid] = 1, update_cpu(g, t);
         }
-        break;
+        return;
     }
     default: break;
     }
-    hv_gicv3_update(g);
+    update_cpu(g, c);
 }
 
 /* ---- MMIO: bitmap, byte and route registers shared by GICD and GICR ---- */
@@ -379,15 +392,25 @@ static void redist_write_body(void *opaque, uint64_t off, uint64_t v, unsigned s
 }
 
 /* Every way in takes the GIC's own lock (recursive: the bodies call hv_gicv3_update).
-   Devices call in holding the device lock; the CPUs' ICC registers and timers do not need it. */
-void hv_gicv3_update(HvGic *g) {
+   Devices call in holding the device lock; the CPUs' ICC registers and timers do not need it.
+   What is done under it is short, and a pthread mutex found taken puts its caller to sleep at once, for far
+   longer than the wait would have been: so it is tried a few times first. */
+static void gic_lock(HvGic *g) {
+    for (int i = 0; i < 32; i++) {
+        if (pthread_mutex_trylock(&g->mu) == 0) return;
+        __asm__ volatile("yield");
+    }
     pthread_mutex_lock(&g->mu);
+}
+
+void hv_gicv3_update(HvGic *g) {
+    gic_lock(g);
     hv_gicv3_update_body(g);
     pthread_mutex_unlock(&g->mu);
 }
 
 void hv_gicv3_set_irq(HvGic *g, int intid, int level) {
-    pthread_mutex_lock(&g->mu);
+    gic_lock(g);
     hv_gicv3_set_irq_body(g, intid, level);
     pthread_mutex_unlock(&g->mu);
 }
@@ -398,52 +421,52 @@ void hv_gicv3_set_ppi(HvGic *g, int c, int intid, int level) {
     if (intid >= 16 && intid < 32 && c < HV_MAX_CPUS &&
         __atomic_load_n(&g->cpu[c].level[intid], __ATOMIC_RELAXED) == (level != 0))
         return;
-    pthread_mutex_lock(&g->mu);
+    gic_lock(g);
     hv_gicv3_set_ppi_body(g, c, intid, level);
     pthread_mutex_unlock(&g->mu);
 }
 
 void hv_gicv3_pend(HvGic *g, int intid) {
-    pthread_mutex_lock(&g->mu);
+    gic_lock(g);
     hv_gicv3_pend_body(g, intid);
     pthread_mutex_unlock(&g->mu);
 }
 
 static uint64_t icc_read(HvMachine *m, HvCpu *cpu, uint32_t reg) {
-    pthread_mutex_lock(&((HvGic *)m->gic)->mu);
+    gic_lock(m->gic);
     uint64_t v_ = icc_read_body(m, cpu, reg);
     pthread_mutex_unlock(&((HvGic *)m->gic)->mu);
     return v_;
 }
 
 static void icc_write(HvMachine *m, HvCpu *cpu, uint32_t reg, uint64_t v) {
-    pthread_mutex_lock(&((HvGic *)m->gic)->mu);
+    gic_lock(m->gic);
     icc_write_body(m, cpu, reg, v);
     pthread_mutex_unlock(&((HvGic *)m->gic)->mu);
 }
 
 static uint64_t dist_read(void *opaque, uint64_t off, unsigned size) {
-    pthread_mutex_lock(&((HvGic *)opaque)->mu);
+    gic_lock(opaque);
     uint64_t v_ = dist_read_body(opaque, off, size);
     pthread_mutex_unlock(&((HvGic *)opaque)->mu);
     return v_;
 }
 
 static void dist_write(void *opaque, uint64_t off, uint64_t v, unsigned size) {
-    pthread_mutex_lock(&((HvGic *)opaque)->mu);
+    gic_lock(opaque);
     dist_write_body(opaque, off, v, size);
     pthread_mutex_unlock(&((HvGic *)opaque)->mu);
 }
 
 static uint64_t redist_read(void *opaque, uint64_t off, unsigned size) {
-    pthread_mutex_lock(&((HvGic *)opaque)->mu);
+    gic_lock(opaque);
     uint64_t v_ = redist_read_body(opaque, off, size);
     pthread_mutex_unlock(&((HvGic *)opaque)->mu);
     return v_;
 }
 
 static void redist_write(void *opaque, uint64_t off, uint64_t v, unsigned size) {
-    pthread_mutex_lock(&((HvGic *)opaque)->mu);
+    gic_lock(opaque);
     redist_write_body(opaque, off, v, size);
     pthread_mutex_unlock(&((HvGic *)opaque)->mu);
 }
