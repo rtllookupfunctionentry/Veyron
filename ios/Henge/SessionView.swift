@@ -239,6 +239,7 @@ struct SessionView: View {
         }
         .onAppear {
             UIApplication.shared.isIdleTimerDisabled = true
+            HengeAudio.shared.activate()
             HardwareMouse.shared.start()
             RemoteDesktop.shared.setMac(name: mac.name)
             if remoteEnabled { RemoteDesktop.shared.start() }
