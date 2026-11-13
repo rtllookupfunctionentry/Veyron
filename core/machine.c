@@ -2,6 +2,7 @@
 
 #include <mach/mach.h>
 #include <mach/mach_time.h>
+#include <mach/thread_switch.h>
 #include <sched.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -275,7 +276,10 @@ void hv_cpu_sync(HvCpu *self, HvCpu *target, uint64_t seq) {
                 __ulock_wait(HV_UL_COMPARE_AND_WAIT | HV_ULF_NO_ERRNO, &t->ack_seq, (uint32_t)ack, 100);
             __atomic_sub_fetch(&t->ack_waiters, 1, __ATOMIC_SEQ_CST);
         } else if (spins > 200) {
-            sched_yield();
+            /* The core goes to the CPU waited for, if it has none. sched_yield() only gives way to threads of this
+               one's priority or above, and the busiest CPUs run a class higher than the rest (fast_core_rank):
+               one of those would spin here keeping a lower one it waits for off the cores. */
+            thread_switch(t->thread, SWITCH_OPTION_DEPRESS, 1);
         }
     }
     if (s) {
